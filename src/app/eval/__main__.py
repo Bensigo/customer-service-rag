@@ -94,6 +94,12 @@ def _build_retriever(
         )
         closers.append(("vector store", vector_store.close))
         vector_store.ensure_collection()
+        # Register the throwaway-collection drop the moment it exists, so it
+        # is torn down even if a later build step raises (the drop runs
+        # before vector_store.close since teardown is LIFO).
+        closers.append(
+            ("eval collection", lambda: _drop_collection(settings.qdrant_url, collection))
+        )
     except Exception:
         _close_all(list(reversed(closers)))
         raise
@@ -139,8 +145,8 @@ def main() -> int:
             corpus_size = _ingest_samples(service)
             report = run_retrieval_eval(retriever, dataset, k=DEFAULT_K)
         finally:
+            # closers already include dropping the throwaway collection (LIFO).
             _close_all(closers)
-            _drop_collection(settings.qdrant_url, collection)
 
     print(f"corpus: {corpus_size} docs from {SAMPLES_DIR}")
     print(format_report(report, k=DEFAULT_K, total=len(dataset)))
