@@ -43,3 +43,9 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# "app" is this project's package; pin it as first-party so submodules
+# whose names shadow builtins (e.g. app.eval) group with the rest of the
+# first-party imports instead of drifting into the third-party block.
+known-first-party = ["app"]
