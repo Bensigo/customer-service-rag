@@ -15,10 +15,10 @@ import os
 import urllib.request
 
 import pytest
-from app.stores.vector_store import VectorStore
 from qdrant_client import QdrantClient
 
 from app.models import Chunk
+from app.stores.vector_store import VectorStore
 
 # Read at import (collection) time: the autouse hermetic_settings fixture
 # scrubs QDRANT_URL from the environment before each test runs.
