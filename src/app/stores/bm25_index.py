@@ -29,12 +29,16 @@ from app.models import Chunk
 _SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     chunk_id UNINDEXED,
+    doc_id UNINDEXED,
+    version UNINDEXED,
     text,
     content='',
     contentless_delete=1,
     contentless_unindexed=1
 )
 """
+
+_MIN_SQLITE = (3, 47, 0)
 
 _TERM_RE = re.compile(r"\w+")
 
@@ -55,33 +59,40 @@ class Bm25Index:
     """BM25 postings over chunk text, keyed by chunk id, on a caller-owned connection."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
+        if sqlite3.sqlite_version_info < _MIN_SQLITE:
+            raise RuntimeError(
+                "Bm25Index requires SQLite >= 3.47 for contentless-delete FTS5; "
+                f"this interpreter bundles {sqlite3.sqlite_version}"
+            )
         self._conn = conn
         conn.execute(_SCHEMA)
 
     def index_chunks(self, chunks: list[Chunk]) -> None:
-        """Index the chunks' text; re-indexing a chunk id replaces it, never duplicates."""
+        """Index the chunks' text; a repeated chunk id (across or within calls)
+        replaces the previous row, never duplicates."""
+        deduped = list({chunk.id: chunk for chunk in chunks}.values())
         with self._conn:  # commits on success, rolls back on exception
             self._conn.executemany(
                 "DELETE FROM chunks_fts WHERE chunk_id = ?",
-                [(chunk.id,) for chunk in chunks],
+                [(chunk.id,) for chunk in deduped],
             )
             self._conn.executemany(
-                "INSERT INTO chunks_fts (chunk_id, text) VALUES (?, ?)",
-                [(chunk.id, chunk.text) for chunk in chunks],
+                "INSERT INTO chunks_fts (chunk_id, doc_id, version, text) VALUES (?, ?, ?, ?)",
+                [(chunk.id, chunk.doc_id, chunk.version, chunk.text) for chunk in deduped],
             )
 
     def remove_document_version(self, doc_id: str, version: int) -> None:
         """Drop the postings of every chunk of (doc_id, version); missing ones are a no-op.
 
-        Matches the exact chunk id prefix "{doc_id}:{version}:" with
-        substr instead of LIKE/GLOB, so doc ids containing wildcard
-        characters or differing only in case are never conflated.
+        Deletes by equality on the stored doc_id and version columns —
+        never by parsing or prefix-matching the composite chunk id, which
+        would conflate doc ids containing ":" (e.g. doc "a" version 1
+        vs doc "a:1").
         """
-        prefix = f"{doc_id}:{version}:"
         with self._conn:
             self._conn.execute(
-                "DELETE FROM chunks_fts WHERE substr(chunk_id, 1, ?) = ?",
-                (len(prefix), prefix),
+                "DELETE FROM chunks_fts WHERE doc_id = ? AND version = ?",
+                (doc_id, version),
             )
 
     def search(self, query: str, k: int) -> list[tuple[str, float]]:
