@@ -107,6 +107,19 @@ class TestEnsureCollection:
         assert chunk_id == "faq:1:0"
         assert score == pytest.approx(1.0)
 
+    def test_ensure_collection_survives_losing_a_create_race(self, store, monkeypatch):
+        # two services can bootstrap concurrently: the other one creates the
+        # collection between our exists-check and our create. Simulate losing
+        # that race by forcing the exists-probe to report "missing" while the
+        # collection (created by the fixture) is already there.
+        store.upsert([_chunk("faq", 1, 0)], [_axis(0)])
+        monkeypatch.setattr(QdrantClient, "collection_exists", lambda self, *a, **kw: False)
+
+        store.ensure_collection()  # idempotent no-op, not a 409/already-exists error
+
+        # ...and it validated the existing collection instead of recreating it
+        assert _ids(store.search(_axis(0), k=1)) == ["faq:1:0"]
+
     @pytest.mark.integration
     @pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable")
     def test_ensure_collection_dim_mismatch_fails_loudly(self):
