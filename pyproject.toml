@@ -31,6 +31,9 @@ packages = ["src/app"]
 testpaths = ["tests"]
 addopts = "-q --import-mode=importlib"
 filterwarnings = ["error"]
+markers = [
+    "integration: hits a live Ollama server; auto-skipped when it is unreachable",
+]
 
 [tool.ruff]
 line-length = 100
