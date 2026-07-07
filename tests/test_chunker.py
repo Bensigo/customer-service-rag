@@ -55,7 +55,7 @@ class TestEstimateTokens:
 
 class TestChunkText:
     def make_sentences(self, n: int) -> str:
-        # each sentence = 5 words -> estimate_tokens == 7
+        # each sentence = 6 words -> estimate_tokens == ceil(6 * 1.4) == 9
         return " ".join(f"This is test sentence number {i}." for i in range(n))
 
     def test_single_short_text_is_one_chunk(self):
@@ -77,12 +77,27 @@ class TestChunkText:
         assert all(d.token_estimate <= 21 for d in drafts)
 
     def test_consecutive_chunks_share_overlap_sentences(self):
-        drafts = chunk_text(self.make_sentences(12), max_tokens=21, overlap_sentences=2)
+        # sentences are 6 words -> 9 tokens; 27-token budget = 3 per window,
+        # leaving room for the full 2-sentence overlap
+        drafts = chunk_text(self.make_sentences(12), max_tokens=27, overlap_sentences=2)
 
-        for prev, cur in zip(drafts, drafts[1:]):
+        assert len(drafts) > 1
+        for prev, cur in zip(drafts, drafts[1:], strict=False):
             prev_sentences = split_sentences(prev.text)
             overlap = " ".join(prev_sentences[-2:])
             assert cur.text.startswith(overlap)
+
+    def test_overlap_degrades_when_window_is_too_small_to_repeat(self):
+        # 21-token budget fits only 2 sentences per window; a full
+        # 2-sentence overlap would repeat the same window forever, so the
+        # chunker must shrink the overlap and still advance
+        drafts = chunk_text(self.make_sentences(6), max_tokens=21, overlap_sentences=2)
+
+        texts = [d.text for d in drafts]
+        assert len(texts) == len(set(texts))  # no repeated windows
+        for prev, cur in zip(drafts, drafts[1:], strict=False):
+            prev_last = split_sentences(prev.text)[-1]
+            assert cur.text.startswith(prev_last)  # still overlaps by one
 
     def test_seq_is_contiguous_from_zero(self):
         drafts = chunk_text(self.make_sentences(12), max_tokens=21)
