@@ -12,6 +12,7 @@ import os
 import sqlite3
 import urllib.request
 import uuid
+from urllib.parse import urlsplit
 
 import httpx2
 import pytest
@@ -27,6 +28,16 @@ from app.stores.vector_store import VectorStore
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 MODEL = "nomic-embed-text"
+
+
+def _safe_url(url: str) -> str:
+    """scheme://host:port only, dropping any userinfo so credentials embedded
+    in OLLAMA_BASE_URL/QDRANT_URL never reach a skip message or CI log."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{host}{port}" if host else "(redacted)"
+
 
 pytestmark = pytest.mark.integration
 
@@ -63,9 +74,9 @@ def _qdrant_reachable() -> bool:
 def rig(tmp_path, request):
     # Probed here, not at import, so unit-only runs never touch the network.
     if not _ollama_model_available():
-        pytest.skip(f"Ollama not reachable at {OLLAMA_BASE_URL} or {MODEL} not pulled")
+        pytest.skip(f"Ollama not reachable at {_safe_url(OLLAMA_BASE_URL)} or {MODEL} not pulled")
     if not _qdrant_reachable():
-        pytest.skip(f"Qdrant not reachable at {QDRANT_URL}")
+        pytest.skip(f"Qdrant not reachable at {_safe_url(QDRANT_URL)}")
 
     # finalizers are registered as each resource opens (they run LIFO), so
     # everything is released even when a later setup step fails

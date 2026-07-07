@@ -30,13 +30,15 @@ Known windows, none of which surface stale text permanently:
 - Between writing the new version and finishing the sweep, both
   versions are briefly searchable.
 - If compensation itself partially fails, index entries of the failed
-  version can linger. Their ids hydrate to nothing (the chunk rows are
-  gone, and ChunkStore.get_chunks_by_ids skips unknown ids), and they
-  are deleted for good when the next ingest reuses that version number:
-  the pipeline clears both indexes for a freshly allocated version
-  before indexing into it, instead of relying on same-id overwrites,
-  which would leak higher-seq entries when a re-chunk yields fewer
-  chunks.
+  version can linger. When the chunk-store undo succeeded, their ids
+  hydrate to nothing (the chunk rows are gone, and
+  ChunkStore.get_chunks_by_ids skips unknown ids); when the chunk-store
+  undo also failed, the aborted version stays retrievable through the
+  surviving index until it is cleaned up. Either way it is removed for
+  good when the next ingest reuses that version number: the pipeline
+  clears both indexes for a freshly allocated version before indexing
+  into it, instead of relying on same-id overwrites, which would leak
+  higher-seq entries when a re-chunk yields fewer chunks.
 - If the sweep fails, the superseded version stays searchable - and any
   answers cached from it stay unspoiled in the cache - until the next
   ingest of the document retries the sweep and then invalidates; the
@@ -125,6 +127,12 @@ class IngestionService:
     one ingestion worker; SQLite's single-writer locking backs this up):
     the compensation and sweep guarantees reason about one in-flight
     version per document at a time.
+
+    ``doc_id`` is expected to already match the API's ``^[a-z0-9-]{1,64}$``
+    precondition (#12 validates it before calling); the service does not
+    re-validate. It stays correct for any colon-free doc id (deletes are
+    keyed on (doc_id, version) equality), but callers outside the API
+    should enforce the same charset.
     """
 
     def __init__(
