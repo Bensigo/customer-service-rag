@@ -11,9 +11,9 @@ import os
 
 import httpx2
 import pytest
-from app.retrieval.embedder import Embedder, OllamaEmbeddingsClient
 
 from app.ingestion.chunker import chunk_text
+from app.retrieval.embedder import Embedder, OllamaEmbeddingsClient
 
 # Read at collection time, before the hermetic_settings fixture scrubs env.
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -40,9 +40,10 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def embedder() -> Embedder:
+def embedder():
     client = OllamaEmbeddingsClient(base_url=OLLAMA_BASE_URL, model=MODEL)
-    return Embedder(client=client, model=MODEL)
+    yield Embedder(client=client, model=MODEL)
+    client.close()
 
 
 def _cosine(a: list[float], b: list[float]) -> float:

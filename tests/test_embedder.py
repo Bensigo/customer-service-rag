@@ -8,14 +8,14 @@ import json
 
 import httpx2
 import pytest
+
+from app.config import Settings
 from app.retrieval.embedder import (
     Embedder,
     EmbeddingError,
     OllamaEmbeddingsClient,
     create_embedder,
 )
-
-from app.config import Settings
 
 QWEN3_QUERY = (
     "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
@@ -223,6 +223,19 @@ def test_http_client_raises_embedding_error_on_count_mismatch():
 
     with pytest.raises(EmbeddingError, match="2"):
         client.embed(["first", "second"])
+
+
+def test_http_client_close_releases_the_connection():
+    def handler(request):
+        return httpx2.Response(200, json={"embeddings": [[0.1]]})
+
+    client = make_http_client(handler)
+    client.embed(["text"])
+
+    client.close()
+
+    with pytest.raises(RuntimeError, match="closed"):
+        client.embed(["text"])
 
 
 def test_http_client_error_messages_never_contain_input_text():

@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     cache_ttl_seconds: int = 3600
     max_upload_bytes: int = 5_000_000
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embed_model: str = "qwen3-embedding"
 
 
 @lru_cache
