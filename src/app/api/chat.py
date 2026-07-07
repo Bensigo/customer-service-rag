@@ -42,6 +42,7 @@ from app.chat.context import assemble_context
 from app.chat.fingerprint import fingerprint
 from app.chat.llm import LLMClient, LLMError
 from app.models import Message, RetrievedChunk, SourceRef, Turn
+from app.observability import StageTimings, emit_request_summary
 from app.stores.cache import CachedResponse
 
 logger = logging.getLogger("app.api.chat")
@@ -204,6 +205,7 @@ async def _cache_set(
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
+    request: Request,
     sessions: SessionStoreDep,
     retriever: RetrieverDep,
     reranker: RerankerDep,
@@ -211,6 +213,46 @@ async def chat(
     cache: ResponseCacheDep,
     cache_ttl: CacheTtlDep,
 ) -> ChatResponse | JSONResponse:
+    """POST /chat — the single instrumentation seam for #21.
+
+    Owns the request-scoped ``StageTimings`` and emits exactly one
+    ``request_summary`` log line (ids/counts/durations/flags only, never
+    content) per request, across every return path — cache hit, grounded
+    refusal, generation failure, or a live answer.
+    """
+    timings = StageTimings()
+    result = await _run_chat(body, sessions, retriever, reranker, llm, cache, cache_ttl, timings)
+    emit_request_summary(
+        request_id=getattr(request.state, "request_id", ""),
+        route="/chat",
+        status=result.status,
+        cache_hit=result.cache_hit,
+        timings=timings,
+    )
+    return result.response
+
+
+class _ChatResult:
+    """The chat response plus the summary-line metadata for #21."""
+
+    __slots__ = ("response", "status", "cache_hit")
+
+    def __init__(self, response: ChatResponse | JSONResponse, status: int, cache_hit: bool) -> None:
+        self.response = response
+        self.status = status
+        self.cache_hit = cache_hit
+
+
+async def _run_chat(
+    body: ChatRequest,
+    sessions: SupportsSessionStore,
+    retriever: SupportsRetriever,
+    reranker: SupportsReranker,
+    llm: LLMClient,
+    cache: SupportsResponseCache,
+    cache_ttl: int,
+    timings: StageTimings,
+) -> _ChatResult:
     session_id = body.session_id
     question = body.message  # validated: stripped and non-blank
 
@@ -227,42 +269,60 @@ async def chat(
     if fp is not None:
         cached = await _cache_get(cache, fp)
         if cached is not None:
-            # HIT: skip retrieval, rerank, and the LLM entirely. Still append
-            # both turns so the conversation continues from here.
+            # HIT: skip retrieval, rerank, and the LLM entirely (those stage
+            # timers never run, so they are omitted from the summary). Still
+            # append both turns so the conversation continues from here.
             await _append_turns(sessions, session_id, question, cached.answer)
             logger.info(
                 "chat cache hit session=%s source_count=%d",
                 session_id,
                 len(cached.sources),
             )
-            return ChatResponse(answer=cached.answer, sources=_sources(cached.sources), cached=True)
+            response = ChatResponse(
+                answer=cached.answer, sources=_sources(cached.sources), cached=True
+            )
+            return _ChatResult(response, status=200, cache_hit=True)
 
     # Blocking retrieval off the event loop (default threadpool: concurrent).
-    candidates = await anyio.to_thread.run_sync(retriever.retrieve, question)
+    with timings.stage("retrieval"):
+        candidates = await anyio.to_thread.run_sync(retriever.retrieve, question)
 
     if not candidates:
-        # Grounded refusal: no sources => never call the model.
+        # Grounded refusal: no sources => never call the model (rerank/llm
+        # timers never run, so they are omitted from the summary).
         logger.info("chat no-context escalation session=%s", session_id)
-        return ChatResponse(answer=ESCALATION_ANSWER, sources=[])
+        return _ChatResult(
+            ChatResponse(answer=ESCALATION_ANSWER, sources=[]), status=200, cache_hit=False
+        )
 
-    reranked = await anyio.to_thread.run_sync(
-        lambda: reranker.rerank(question, candidates, top_n=_RERANK_TOP_N)
-    )
+    with timings.stage("rerank"):
+        reranked = await anyio.to_thread.run_sync(
+            lambda: reranker.rerank(question, candidates, top_n=_RERANK_TOP_N)
+        )
     assembled = assemble_context(question, reranked, history)
 
     try:
-        answer = await anyio.to_thread.run_sync(_generate, llm, assembled.messages)
+        with timings.stage("llm"):
+            answer = await anyio.to_thread.run_sync(_generate, llm, assembled.messages)
     except LLMError:
         # No turns are appended: the session is untouched so a retry is clean.
         logger.warning("chat generation unavailable session=%s", session_id)
-        return JSONResponse(status_code=503, content={"error": "generation_unavailable"})
+        return _ChatResult(
+            JSONResponse(status_code=503, content={"error": "generation_unavailable"}),
+            status=503,
+            cache_hit=False,
+        )
 
     if not answer.strip():
         # A blank answer (the thinking-model empty-output failure mode) is not
         # a usable reply: treat it as generation-unavailable rather than
         # returning a 200 with an empty answer. No turns are appended.
         logger.warning("chat generation empty session=%s", session_id)
-        return JSONResponse(status_code=503, content={"error": "generation_unavailable"})
+        return _ChatResult(
+            JSONResponse(status_code=503, content={"error": "generation_unavailable"}),
+            status=503,
+            cache_hit=False,
+        )
 
     # Turns are appended only after a successful generation, so a failed
     # turn never lingers for a retry.
@@ -281,4 +341,5 @@ async def chat(
         session_id,
         len(assembled.source_refs),
     )
-    return ChatResponse(answer=answer, sources=_sources(assembled.source_refs), cached=False)
+    response = ChatResponse(answer=answer, sources=_sources(assembled.source_refs), cached=False)
+    return _ChatResult(response, status=200, cache_hit=False)
