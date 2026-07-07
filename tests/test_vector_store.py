@@ -15,7 +15,7 @@ import os
 import urllib.request
 
 import pytest
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 
 from app.models import Chunk
 from app.stores.vector_store import VectorStore
@@ -133,6 +133,32 @@ class TestEnsureCollection:
         finally:
             original.close()
             _delete_collection(collection)
+
+    @pytest.mark.integration
+    @pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable")
+    def test_ensure_collection_foreign_vector_config_fails_loudly(self):
+        # a same-named collection created elsewhere with *named* vectors has
+        # no single dimension to compare against; ensure_collection must
+        # still raise the clear ValueError, not an AttributeError from
+        # poking .size on a dict
+        collection = "test10_foreign_vector_config"
+        client = QdrantClient(url=_QDRANT_URL)
+        try:
+            client.create_collection(
+                collection_name=collection,
+                vectors_config={
+                    "text": models.VectorParams(size=DIM, distance=models.Distance.COSINE)
+                },
+            )
+            store = VectorStore(_QDRANT_URL, vector_size=DIM, collection=collection)
+            try:
+                with pytest.raises(ValueError, match=collection):
+                    store.ensure_collection()
+            finally:
+                store.close()
+        finally:
+            client.delete_collection(collection)
+            client.close()
 
 
 class TestUpsertAndSearch:
