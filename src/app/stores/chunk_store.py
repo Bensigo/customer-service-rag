@@ -6,8 +6,15 @@ readable — their chunk ids may still be referenced by the search
 indexes — until pipeline cleanup (#11) calls delete_version. WAL mode
 keeps readers unblocked during writes.
 
-One connection per store instance, used from one thread; concurrent
-processes are serialized by SQLite's single-writer locking.
+One connection per store instance, used from one thread at a time;
+concurrent processes are serialized by SQLite's single-writer locking.
+
+The connection is opened with ``check_same_thread=False`` so the app can
+create the store on its startup thread yet run ingests on an offloaded
+worker thread (#12 runs the pipeline via ``anyio.to_thread`` behind a
+single-permit limiter, so only one thread ever touches the connection at
+a time). Python's sqlite3 is in serialized mode (threadsafety 3), which
+makes that hand-off safe.
 """
 
 import sqlite3
@@ -61,7 +68,10 @@ class ChunkStore:
 
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(db_path)
+        # check_same_thread=False: the store is created on the app startup
+        # thread but used from an offloaded worker thread; access is
+        # serialized by the caller (one ingest at a time), never concurrent.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
