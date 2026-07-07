@@ -149,6 +149,7 @@ def _build_chat_stack(
         closers.append(("session store", session_store.close))
 
         llm_client = create_llm_client(settings)
+        closers.append(("llm client", llm_client.close))
     except Exception:
         _close_all(list(reversed(closers)))
         raise

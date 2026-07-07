@@ -54,14 +54,17 @@ class LLMClient(Protocol):
 
     Synchronous and blocking by design — the chat endpoint offloads it
     via ``anyio.to_thread``, consistent with the embedder and reranker.
+    ``close`` releases any pooled HTTP client at shutdown.
     """
 
     def complete(self, messages: list[Message]) -> str: ...
 
+    def close(self) -> None: ...
+
 
 class SupportsInvoke(Protocol):
     """A LangChain chat model seam: ``invoke`` a message list, get a
-    message whose ``text()`` is the answer. Lets tests inject a fake."""
+    message whose ``.text`` is the answer. Lets tests inject a fake."""
 
     def invoke(self, messages: list[BaseMessage]) -> BaseMessage: ...
 
@@ -87,7 +90,21 @@ class _LangChainClient:
             response = self._model.invoke(_to_langchain(messages))
         except Exception as error:
             raise LLMError(f"LLM generation failed: {type(error).__name__}") from error
-        return response.text()
+        # ``.text`` is a property on modern LangChain messages; it flattens
+        # string or content-block responses to plain text.
+        return response.text
+
+    def close(self) -> None:
+        """Release the underlying model's pooled HTTP client, if any.
+
+        LangChain's ChatOllama/ChatAnthropic hold an httpx client that
+        must be closed on shutdown or the socket leaks. Best-effort: a
+        model without a closable client (e.g. a test fake) is a no-op.
+        """
+        client = getattr(self._model, "_client", None)
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
 
 
 class LangChainOllamaClient(_LangChainClient):

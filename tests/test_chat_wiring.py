@@ -91,7 +91,11 @@ class _FakeReranker:
 
 
 class _FakeLLM:
-    pass
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 def _patch(monkeypatch):
@@ -120,7 +124,7 @@ def test_build_chat_stack_wires_all_collaborators(monkeypatch):
     assert hasattr(state["retriever"], "retrieve")
     # every collaborator has a registered closer
     names = {name for name, _ in closers}
-    assert {"session store", "reranker", "retriever pool"} <= names
+    assert {"session store", "reranker", "retriever pool", "llm client"} <= names
     # close them all
     for _, close in closers:
         close()

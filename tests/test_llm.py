@@ -40,6 +40,7 @@ class _FakeAIMessage:
         self._text = text
         self.content = text
 
+    @property
     def text(self):
         return self._text
 
@@ -132,3 +133,29 @@ def test_anthropic_client_returns_invoke_text():
     client = LangChainAnthropicClient(fake)
 
     assert client.complete(_messages()) == "claude answer"
+
+
+def test_close_closes_the_underlying_model_client():
+    class _ClosableClient:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _ModelWithClient(FakeChatModel):
+        def __init__(self):
+            super().__init__()
+            self._client = _ClosableClient()
+
+    model = _ModelWithClient()
+    client = LangChainOllamaClient(model)
+
+    client.close()
+
+    assert model._client.closed
+
+
+def test_close_is_a_noop_when_model_has_no_client():
+    # A bare fake (no _client) must not raise on close.
+    LangChainOllamaClient(FakeChatModel()).close()
