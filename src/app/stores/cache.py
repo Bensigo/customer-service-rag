@@ -171,6 +171,15 @@ class RedisCacheInvalidator:
         Reads ``doc_tag:{doc_id}`` then pipelines a ``DEL`` of every member
         cache key and the tag set. Fail-open on ANY Redis error: warn and
         return, never raise (a failed eviction must not fail the ingest).
+
+        Known window: the read and the delete are two round-trips, not one
+        atomic transaction. A ``ResponseCache.set`` for the same ``doc_id``
+        that lands between the ``smembers`` read and the trailing
+        ``DEL doc_tag`` adds a member that this call then sweeps away,
+        orphaning that one cache entry (it survives, invisible to future
+        invalidations, until its own TTL). The blast radius is bounded to the
+        same "one stale answer until TTL" outcome the fail-open design already
+        accepts, and it needs a concurrent ingest+chat race on one doc id.
         """
         tag_key = _doc_tag_key(doc_id)
         try:
