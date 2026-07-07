@@ -27,9 +27,9 @@ import uuid
 
 import pytest
 import redis
-from app.stores.sessions import SessionStore
 
 from app.models import Turn
+from app.stores.sessions import SessionStore
 
 # Read at collection time: the autouse hermetic_settings fixture scrubs
 # REDIS_URL (a Settings field) from the environment before each test runs.

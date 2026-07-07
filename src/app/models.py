@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,15 @@ class Chunk:
     seq: int
     text: str
     title: str
+
+
+@dataclass(frozen=True, slots=True)
+class Turn:
+    """One conversation turn in a chat session, as kept by the session
+    store and replayed into context assembly."""
+
+    role: Literal["user", "assistant"]
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
