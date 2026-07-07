@@ -20,6 +20,7 @@ from app.api.chat import (
     ESCALATION_ANSWER,
     get_llm_client,
     get_reranker,
+    get_response_cache,
     get_retriever,
     get_session_store,
 )
@@ -84,6 +85,18 @@ class FakeLLMClient:
         return self.reply
 
 
+class MissingCache:
+    """Always-miss response cache: these specs cover the live pipeline, so
+    the cache never intercepts (get returns None; set is a no-op). The
+    cache's own behaviour is covered in test_chat_cache.py."""
+
+    def get(self, fp):
+        return None
+
+    def set(self, fp, response, source_doc_ids, ttl):
+        pass
+
+
 def _build_app(*, chunks=None, llm=None, sessions=None, reranker=None):
     app = create_app()
     # Pre-stash an ingestion_service so the lifespan skips building live
@@ -100,6 +113,7 @@ def _build_app(*, chunks=None, llm=None, sessions=None, reranker=None):
     app.dependency_overrides[get_retriever] = lambda: retriever
     app.dependency_overrides[get_reranker] = lambda: reranker
     app.dependency_overrides[get_llm_client] = lambda: llm
+    app.dependency_overrides[get_response_cache] = lambda: MissingCache()
     app.state._fakes = {
         "sessions": sessions,
         "retriever": retriever,
