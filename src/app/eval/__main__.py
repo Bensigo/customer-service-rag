@@ -17,9 +17,11 @@ list of missed *questions* (from the golden dataset, operator-authored)
 only.
 """
 
+import argparse
 import sqlite3
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -27,10 +29,19 @@ from pathlib import Path
 from qdrant_client import QdrantClient
 
 from app.config import Settings, get_settings
-from app.eval.retrieval_eval import EvalReport, load_golden, run_retrieval_eval
+from app.eval.retrieval_eval import (
+    _DEFAULT_K_EACH,
+    _DEFAULT_TOP_N,
+    EvalReport,
+    GoldenExample,
+    RerankingRetriever,
+    load_golden,
+    run_retrieval_eval,
+)
 from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.retrieval.embedder import create_embedder
 from app.retrieval.hybrid import HybridRetriever
+from app.retrieval.reranker import create_reranker
 from app.stores.bm25_index import Bm25Index
 from app.stores.chunk_store import ChunkStore
 from app.stores.vector_store import VectorStore
@@ -139,7 +150,33 @@ def _ingest_samples(service: IngestionService) -> int:
     return len(sample_files)
 
 
-def main() -> int:
+def _mean_query_latency(retriever, dataset: list[GoldenExample]) -> float:
+    """Mean wall-clock seconds per ``retrieve`` call over the dataset.
+
+    Used to report the reranker's added per-query latency (with minus
+    without). Times only the retrieve call, not metric math. Returns 0.0
+    for an empty dataset.
+    """
+    if not dataset:
+        return 0.0
+    total = 0.0
+    for example in dataset:
+        start = time.perf_counter()
+        retriever.retrieve(example.question, k_each=_DEFAULT_K_EACH, top_n=_DEFAULT_TOP_N)
+        total += time.perf_counter() - start
+    return total / len(dataset)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m app.eval", description=__doc__)
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="also run the LLM reranker (Ollama) and print a with/without comparison "
+        "including added per-query latency",
+    )
+    args = parser.parse_args(argv)
+
     settings = get_settings()
     dataset = load_golden(GOLDEN_PATH)
 
@@ -148,17 +185,43 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="rag-eval-") as tmp_dir:
         db_path = str(Path(tmp_dir) / "eval.sqlite3")
         retriever, service, closers = _build_retriever(settings, db_path, collection)
+        reranker = None
         try:
             corpus_size = _ingest_samples(service)
-            reports = {k: run_retrieval_eval(retriever, dataset, k=k) for k in K_SWEEP}
+            base_reports = {k: run_retrieval_eval(retriever, dataset, k=k) for k in K_SWEEP}
+            base_latency = _mean_query_latency(retriever, dataset)
+
+            rerank_reports: dict[int, EvalReport] | None = None
+            rerank_latency = 0.0
+            if args.rerank:
+                reranker = create_reranker(settings)
+                reranked = RerankingRetriever(retriever, reranker)
+                rerank_reports = {k: run_retrieval_eval(reranked, dataset, k=k) for k in K_SWEEP}
+                rerank_latency = _mean_query_latency(reranked, dataset)
         finally:
+            if reranker is not None:
+                reranker.close()
             # closers already include dropping the throwaway collection (LIFO).
             _close_all(closers)
 
     print(f"corpus: {corpus_size} docs from {SAMPLES_DIR}")
+    if rerank_reports is None:
+        for k in K_SWEEP:
+            print()
+            print(format_report(base_reports[k], k=k, total=len(dataset)))
+        return 0
+
+    print(
+        f"\nmean retrieve latency: baseline {base_latency:.3f}s/query, "
+        f"with rerank {rerank_latency:.3f}s/query "
+        f"(+{rerank_latency - base_latency:.3f}s/query)"
+    )
     for k in K_SWEEP:
         print()
-        print(format_report(reports[k], k=k, total=len(dataset)))
+        print(f"--- k={k}: WITHOUT rerank ---")
+        print(format_report(base_reports[k], k=k, total=len(dataset)))
+        print(f"\n--- k={k}: WITH rerank ---")
+        print(format_report(rerank_reports[k], k=k, total=len(dataset)))
     return 0
 
 

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 5_000_000
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "qwen3-embedding"
+    ollama_rerank_model: str = "gemma4"
     qdrant_collection: str = "chunks"
 
 
