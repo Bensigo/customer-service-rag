@@ -16,6 +16,17 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.18.2
+        ports:
+          - 6333:6333
+        # the image ships no curl/wget, so probe the port with bash's /dev/tcp
+        options: >-
+          --health-cmd "bash -c ':> /dev/tcp/localhost/6333' || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: astral-sh/setup-uv@f98e06938123ccabd21905ea5d0069192241f9f1 # v8.3.1
@@ -29,3 +40,9 @@ jobs:
         run: uv run ruff format --check .
       - name: Test
         run: uv run pytest
+        env:
+          # points the vector-store integration tests at the qdrant service;
+          # QDRANT_REQUIRED turns an unreachable qdrant into a hard failure
+          # so CI can never pass by silently skipping the integration tests
+          QDRANT_URL: http://localhost:6333
+          QDRANT_REQUIRED: "1"
