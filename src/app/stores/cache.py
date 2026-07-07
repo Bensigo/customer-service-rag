@@ -127,3 +127,70 @@ class ResponseCache:
             # Fail open: skip the write. The caller already has a live answer;
             # a failed cache write must not surface. Operation name only.
             logger.warning("response cache set failed; skipping write", exc_info=False)
+
+
+class RedisCacheInvalidator:
+    """Evicts a document's cached answers, implementing the ``CacheInvalidator``
+    Protocol the ingestion pipeline (#11) calls after a successful ingest.
+
+    ``invalidate_document(doc_id)`` reads the eviction tag set
+    ``doc_tag:{doc_id}`` — whose members are ``cache:{fingerprint}`` key
+    strings ResponseCache tagged (#19) — and, in one pipeline, ``DEL``s
+    every listed cache key plus the tag set itself. A missing/empty tag
+    set is a clean no-op. Because the members are stored as their full
+    ``cache:`` key strings, no fingerprint is ever reconstructed here — the
+    key strings must match ResponseCache's exactly, which they do via the
+    shared ``_cache_key`` / ``_doc_tag_key`` helpers.
+
+    Deleting the tag set on every invalidation also prunes the dangling
+    members #19 flagged: once a ``cache:{fp}`` has expired under its TTL,
+    its entry in ``doc_tag:{doc_id}`` lingers (SADD sets no TTL), and a
+    ``DEL`` of an already-gone key is a harmless no-op — so an updated
+    document's tag set is reclaimed cleanly. Residual growth remains only
+    for a document that is *never* re-ingested: its tag set is never read,
+    so expired members accumulate slowly there until the doc is updated.
+
+    Fail-open (non-negotiable): the pipeline calls this after the writes
+    and supersede sweep already succeeded — the new version is live. A
+    Redis error here must therefore NEVER raise: it would turn a good
+    ingest into a failure over nothing worse than a too-stale cache served
+    until its TTL. Any Redis error is logged (operation + doc id only,
+    never keys or content) and swallowed, so the pipeline's own
+    invalidator-error wrap never triggers.
+    """
+
+    def __init__(self, redis_url: str) -> None:
+        self._client = redis.Redis.from_url(redis_url, decode_responses=True)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def invalidate_document(self, doc_id: str) -> None:
+        """Drop every cached answer tagged to ``doc_id`` and its tag set.
+
+        Reads ``doc_tag:{doc_id}`` then pipelines a ``DEL`` of every member
+        cache key and the tag set. Fail-open on ANY Redis error: warn and
+        return, never raise (a failed eviction must not fail the ingest).
+        """
+        tag_key = _doc_tag_key(doc_id)
+        try:
+            members = self._client.smembers(tag_key)
+            if not members:
+                # No tag set (unknown doc) or an empty one: nothing cached
+                # to evict and no tag set to reclaim — a clean no-op.
+                return
+            with self._client.pipeline() as pipe:
+                for member in members:
+                    pipe.delete(member)
+                pipe.delete(tag_key)
+                pipe.execute()
+        except redis.RedisError:
+            # Fail open: a cache-invalidation outage must never fail an
+            # otherwise-successful ingest — the new version is already live.
+            # Worst case a too-stale answer is served until its TTL. Log the
+            # operation and doc id only, never keys/fingerprints/content.
+            logger.warning(
+                "cache invalidation failed for doc_id=%s; cached answers linger until TTL",
+                doc_id,
+                exc_info=False,
+            )
