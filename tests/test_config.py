@@ -15,6 +15,7 @@ def test_settings_defaults():
     assert settings.max_upload_bytes == 5_000_000
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.ollama_embed_model == "qwen3-embedding"
+    assert settings.ollama_rerank_model == "gemma4"
 
 
 def test_settings_reads_from_env(monkeypatch):

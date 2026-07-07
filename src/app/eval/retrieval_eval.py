@@ -80,6 +80,36 @@ class SupportsRetrieve(Protocol):
     ) -> list[RetrievedChunk]: ...
 
 
+class SupportsRerank(Protocol):
+    """The reranker seam (Reranker, #15)."""
+
+    def rerank(
+        self, query: str, candidates: list[RetrievedChunk], top_n: int = ...
+    ) -> list[RetrievedChunk]: ...
+
+
+class RerankingRetriever:
+    """Adapter that reranks a base retriever's candidates so the harness
+    can score the reranked order (issue #15).
+
+    Exposes the same ``retrieve`` seam as ``HybridRetriever``: it fetches
+    the base retriever's candidates, then reranks the whole pool (passing
+    the harness's ``top_n`` straight through, so nothing is truncated
+    before the harness slices its own top-k). This is the with-reranker
+    side of the eval's before/after comparison; the same base retriever
+    and embedder must be used for both sides for the delta to be
+    meaningful.
+    """
+
+    def __init__(self, retriever: SupportsRetrieve, reranker: SupportsRerank) -> None:
+        self._retriever = retriever
+        self._reranker = reranker
+
+    def retrieve(self, query: str, *, k_each: int = 20, top_n: int = 12) -> list[RetrievedChunk]:
+        candidates = self._retriever.retrieve(query, k_each=k_each, top_n=top_n)
+        return self._reranker.rerank(query, candidates, top_n=top_n)
+
+
 def load_golden(path: str | Path) -> list[GoldenExample]:
     """Parse a golden-dataset JSONL file into GoldenExamples.
 

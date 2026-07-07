@@ -140,6 +140,49 @@ class TestHitRate:
         assert k_each >= k, "each index asked for fewer than k candidates"
 
 
+class TestRerankingRetriever:
+    """The eval adapter that wraps a retriever with the LLM reranker so
+    run_retrieval_eval can score the reranked order (issue #15)."""
+
+    def test_reranks_retrieved_candidates_before_returning(self):
+        from app.eval.retrieval_eval import RerankingRetriever
+
+        # Retriever fuses [shipping, password]; a reranker that flips them
+        # must make retrieve() return [password, shipping].
+        base = FakeRetriever({"q": [_retrieved("shipping", 0.9), _retrieved("password", 0.1)]})
+
+        class FlipReranker:
+            def rerank(self, query, candidates, top_n=5):
+                return list(reversed(candidates))[:top_n]
+
+        adapter = RerankingRetriever(base, FlipReranker())
+
+        result = adapter.retrieve("q", k_each=20, top_n=12)
+
+        assert [r.chunk.doc_id for r in result] == ["password", "shipping"]
+
+    def test_passes_top_n_through_to_the_reranker(self):
+        from app.eval.retrieval_eval import RerankingRetriever
+
+        base = FakeRetriever({"q": [_retrieved("a", 0.9), _retrieved("b", 0.8)]})
+        seen = {}
+
+        class RecordingReranker:
+            def rerank(self, query, candidates, top_n=5):
+                seen["top_n"] = top_n
+                seen["n_candidates"] = len(candidates)
+                return candidates[:top_n]
+
+        adapter = RerankingRetriever(base, RecordingReranker())
+
+        adapter.retrieve("q", k_each=20, top_n=7)
+
+        # The reranker sees every retrieved candidate and the harness's top_n,
+        # so it ranks the full pool and the harness slices the reranked top-k.
+        assert seen["top_n"] == 7
+        assert seen["n_candidates"] == 2
+
+
 class TestPrecisionAtK:
     def test_precision_divides_relevant_hits_by_k(self):
         # top-4: relevant, irrelevant, relevant, irrelevant -> 2 relevant / k=4.
