@@ -227,3 +227,17 @@ class TestEdgeCases:
 
         assert retriever.retrieve(QUERY, top_n=0) == []
         assert retriever.retrieve(QUERY, top_n=-1) == []
+
+
+def test_retrieved_chunk_is_hashable_even_when_built_with_a_set():
+    # RetrievedChunk is the shared retrieval type consumed by #15/#17/#18.
+    # HybridRetriever constructs it with a plain set, which must not make
+    # instances unhashable (dict-key / set use would raise TypeError).
+    from app.models import Chunk, RetrievedChunk
+
+    chunk = Chunk(id="d:1:0", doc_id="d", version=1, seq=0, text="t", title="d")
+    rc = RetrievedChunk(chunk=chunk, score=1.0, sources={"bm25", "vector"})
+
+    assert hash(rc) is not None
+    assert {rc}  # set membership must not raise
+    assert rc.sources == {"bm25", "vector"}
