@@ -1,13 +1,13 @@
 from pathlib import Path
 
 import pytest
+
 from app.ingestion.extractors import (
     EmptyDocumentError,
     ExtractionError,
     UnsupportedFileType,
     extract,
 )
-
 from app.models import ExtractedDocument
 
 FIXTURES = Path(__file__).parent / "fixtures"
