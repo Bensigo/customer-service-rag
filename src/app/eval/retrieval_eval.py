@@ -24,6 +24,12 @@ from typing import Protocol
 
 from app.models import RetrievedChunk
 
+# HybridRetriever's own defaults (k_each=20, top_n=12). The eval floors its
+# requests at these so a small k behaves exactly like a normal retrieve,
+# while a large k still gets enough candidates to measure.
+_DEFAULT_K_EACH = 20
+_DEFAULT_TOP_N = 12
+
 
 @dataclass(frozen=True, slots=True)
 class GoldenExample:
@@ -84,10 +90,15 @@ def run_retrieval_eval(
     Questions with no hit are collected into ``misses``. An empty dataset
     yields a hit rate of 0.0 (no questions answered) and no misses.
     """
+    # Ask the retriever for at least k results (and at least k candidates
+    # per index) so retrieved[:k] is the retriever's true top-k rather than
+    # a silently-short slice when k exceeds the default top_n (12).
+    top_n = max(k, _DEFAULT_TOP_N)
+    k_each = max(k, _DEFAULT_K_EACH)
     hits = 0
     misses: list[str] = []
     for example in dataset:
-        retrieved = retriever.retrieve(example.question)
+        retrieved = retriever.retrieve(example.question, k_each=k_each, top_n=top_n)
         top_k_doc_ids = {chunk.chunk.doc_id for chunk in retrieved[:k]}
         if example.expected_doc_id in top_k_doc_ids:
             hits += 1

@@ -48,13 +48,16 @@ def _retrieved(doc_id: str, score: float) -> RetrievedChunk:
 
 
 class FakeRetriever:
-    """Returns a pre-planted ranked list per question, ignoring k_each/top_n
-    so tests control exactly what the harness sees."""
+    """Returns a pre-planted ranked list per question, recording the
+    top_n/k_each it was asked for so tests can assert the harness requests
+    enough candidates to measure the top-k it reports."""
 
     def __init__(self, results: dict[str, list[RetrievedChunk]]) -> None:
         self._results = results
+        self.calls: list[tuple[int, int]] = []  # (k_each, top_n)
 
     def retrieve(self, query: str, *, k_each: int = 20, top_n: int = 12) -> list[RetrievedChunk]:
+        self.calls.append((k_each, top_n))
         return self._results[query]
 
 
@@ -121,6 +124,20 @@ class TestHitRate:
 
         assert report.hit_rate_at_k == 0.5
         assert report.misses == ["q2"]
+
+    def test_requests_at_least_k_candidates_from_the_retriever(self):
+        # The default HybridRetriever returns top_n=12; measuring hit-rate
+        # at a k above that would silently truncate. The harness must ask
+        # the retriever for at least k candidates so retrieved[:k] is real.
+        k = 25
+        retriever = FakeRetriever({"q": [_retrieved("alpha", 0.9)]})
+        dataset = [GoldenExample(question="q", expected_doc_id="alpha")]
+
+        run_retrieval_eval(retriever, dataset, k=k)
+
+        (k_each, top_n) = retriever.calls[0]
+        assert top_n >= k, "retriever asked for fewer than k results"
+        assert k_each >= k, "each index asked for fewer than k candidates"
 
 
 class TestFormatReport:
