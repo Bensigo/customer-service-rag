@@ -133,3 +133,70 @@ def test_close_closes_every_created_retriever():
     pool.close()
 
     assert created and all(r.closed for r in created)
+
+
+def test_close_waits_for_an_in_flight_retrieve_before_closing():
+    # A connection must never be closed while a thread is still running a
+    # query on it: close() blocks until the checkout is returned.
+    started = threading.Event()
+    proceed = threading.Event()
+    closed_during_retrieve = []
+
+    class _BlockingRetriever:
+        def retrieve(self, query, *, k_each=20, top_n=12):
+            started.set()
+            proceed.wait(timeout=5)
+            # record whether close() had already closed us mid-query
+            closed_during_retrieve.append(self.closed)
+            return [query]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    built = []
+
+    def factory():
+        r = _BlockingRetriever()
+        built.append(r)
+        return r, r.close
+
+    pool = RetrieverPool(factory, size=1)
+
+    worker = threading.Thread(target=lambda: pool.retrieve("q"))
+    worker.start()
+    started.wait(timeout=5)
+
+    closer_done = threading.Event()
+
+    def do_close():
+        pool.close()
+        closer_done.set()
+
+    closer = threading.Thread(target=do_close)
+    closer.start()
+
+    # close() must be blocked while the retrieve is still in flight.
+    assert not closer_done.wait(timeout=0.3)
+    assert not built[0].closed
+
+    proceed.set()
+    worker.join(timeout=5)
+    closer.join(timeout=5)
+
+    # the retrieve saw an OPEN connection throughout; close ran only after.
+    assert closed_during_retrieve == [False]
+    assert built[0].closed
+
+
+def test_double_close_is_a_noop():
+    created, live, max_seen, lock = [], [0], [0], threading.Lock()
+    pool = RetrieverPool(_make_factory(created, live, max_seen, lock), size=2)
+
+    pool.retrieve("a")
+    pool.close()
+    pool.close()  # must not deadlock or double-close
+
+    assert all(r.closed for r in created)

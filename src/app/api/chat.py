@@ -34,9 +34,9 @@ import logging
 from typing import Annotated, Protocol
 
 import anyio.to_thread
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.chat.context import assemble_context
 from app.chat.llm import LLMClient, LLMError
@@ -105,15 +105,18 @@ class ChatRequest(BaseModel):
     # Same grammar the session store enforces (defense in depth): reject a
     # malformed id at the edge with a 422 rather than a 500 from the store.
     session_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")
-    # 1..2000 chars; min_length=1 plus the blank-only guard below stops an
-    # empty or whitespace-only question from reaching retrieval.
+    # 1..2000 chars, non-blank once stripped — enforced during validation so
+    # an empty or whitespace-only question is a uniform 422, never reaching
+    # retrieval. The stripped value is what downstream code uses.
     message: str = Field(min_length=1, max_length=2000)
 
-    def normalized_message(self) -> str:
-        text = self.message.strip()
-        if not text:
-            raise HTTPException(status_code=422, detail="message must not be blank")
-        return text
+    @field_validator("message")
+    @classmethod
+    def _strip_and_require_content(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("message must not be blank")
+        return stripped
 
 
 class SourceModel(BaseModel):
@@ -144,7 +147,7 @@ async def chat(
     llm: LLMClientDep,
 ) -> ChatResponse | JSONResponse:
     session_id = body.session_id
-    question = body.normalized_message()
+    question = body.message  # validated: stripped and non-blank
 
     history = sessions.get_history(session_id, limit=_HISTORY_LIMIT)
 

@@ -94,10 +94,24 @@ class RetrieverPool:
 
     def close(self) -> None:
         """Close every retriever's connections. Idempotent; further
-        ``retrieve`` calls raise. Each close is attempted even if one
-        fails, so a single failure cannot leak the rest."""
+        ``retrieve`` calls raise.
+
+        Blocks until every checked-out retriever has been returned before
+        closing any connection, so a connection is never closed out from
+        under a thread still running a query (use-after-close). Each close
+        is attempted even if one fails, so a single failure cannot leak
+        the rest.
+        """
         with self._lock:
+            if self._closed:  # idempotent: a second call must not re-drain
+                return
             self._closed = True
+        # Drain all permits: each acquire waits for one outstanding checkout
+        # to be returned (an in-flight retrieve releases its permit in its
+        # finally). Once we hold every permit, no retriever is in use.
+        for _ in range(self._size):
+            self._slots.acquire()
+        with self._lock:
             entries = list(self._all)
             self._all.clear()
             self._idle.clear()
