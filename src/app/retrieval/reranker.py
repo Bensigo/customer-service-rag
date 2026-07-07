@@ -168,6 +168,12 @@ def parse_score(raw: str) -> int | None:
             break
     if not digits:
         return None
+    # A valid score is at most two digits ("10"); reject longer runs before
+    # int(), both to drop out-of-range values and to avoid CPython's >4300-digit
+    # int() ValueError on a hostile/misconfigured server's response (num_predict
+    # is only a client request the server may ignore).
+    if len(digits) > 2:
+        return None
     value = int(digits)
     if _MIN_SCORE <= value <= _MAX_SCORE:
         return value

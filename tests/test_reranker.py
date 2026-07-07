@@ -155,6 +155,25 @@ def test_out_of_range_output_falls_back():
     assert [r.chunk.doc_id for r in result] == ["b", "a"]
 
 
+def test_huge_digit_run_falls_back_without_crashing():
+    # A hostile/misconfigured Ollama (num_predict is only a client request the
+    # server may ignore) can return a very long digit run. int() over >4300
+    # digits raises ValueError in CPython; the rerank must fail open for that
+    # candidate, not crash the whole call.
+    from app.retrieval.reranker import parse_score
+
+    assert parse_score("9" * 5000) is None
+
+    candidates = [_retrieved("b", "bravo", 0.9), _retrieved("a", "alpha", 0.8)]
+    client = FakeRerankClient({"alpha": "9" * 5000, "bravo": "7"})
+    reranker = Reranker(client=client)
+
+    result = reranker.rerank("q", candidates, top_n=2)
+
+    # 'a' falls back to its fused slot; nothing raises, nothing is dropped.
+    assert [r.chunk.doc_id for r in result] == ["b", "a"]
+
+
 # --- fail-open -------------------------------------------------------------
 
 
