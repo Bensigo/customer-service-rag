@@ -38,6 +38,41 @@ class TestSplitSentences:
             "No receipt needed",
         ]
 
+    def test_closing_quote_after_punctuation_is_a_boundary(self):
+        text = 'The error read "Not found." Try again later.'
+
+        assert split_sentences(text) == [
+            'The error read "Not found."',
+            "Try again later.",
+        ]
+
+    def test_sentence_ending_in_the_word_no_splits(self):
+        # "no"/"etc" are deliberately NOT in the abbreviation list: as
+        # ordinary words they end sentences constantly in support text,
+        # and a false merge (unbounded sentence growth) costs far more
+        # than a false split on the rarer "No. 5" usage
+        text = "The answer is no. Please contact support."
+
+        assert split_sentences(text) == [
+            "The answer is no.",
+            "Please contact support.",
+        ]
+
+    def test_sentence_final_abbreviation_merge_is_the_accepted_tradeoff(self):
+        # A title abbreviation at a genuine sentence end cannot be
+        # disambiguated by a word list; the accepted failure is a bounded
+        # merge of the two sentences (documented in the module docstring)
+        text = "Ask for Dr. The clinic opens at nine."
+
+        assert split_sentences(text) == ["Ask for Dr. The clinic opens at nine."]
+
+    def test_long_run_of_abbreviations_stays_one_sentence(self):
+        # also the O(n) guard: repeated abbreviation boundaries must not
+        # re-scan the whole accumulated candidate per boundary
+        text = "Dr. " * 2000 + "Smith."
+
+        assert split_sentences(text) == [text.strip()]
+
     def test_empty_and_whitespace_return_nothing(self):
         assert split_sentences("") == []
         assert split_sentences("   \n\n  \t ") == []
