@@ -20,27 +20,30 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 MODEL = "nomic-embed-text"
 
 
+pytestmark = pytest.mark.integration
+
+
 def _model_available() -> bool:
+    """Probe for a live Ollama with the test model pulled.
+
+    Any failure at all — unreachable server, a bad OLLAMA_BASE_URL
+    (httpx2.InvalidURL is not an HTTPError), an unexpected payload —
+    means "unavailable": these tests then skip rather than error.
+    """
     try:
         response = httpx2.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2.0)
         response.raise_for_status()
         names = [entry["name"] for entry in response.json()["models"]]
-    except (httpx2.HTTPError, KeyError, TypeError, ValueError):
+    except Exception:
         return False
     return any(name == MODEL or name.startswith(f"{MODEL}:") for name in names)
 
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not _model_available(),
-        reason=f"Ollama not reachable at {OLLAMA_BASE_URL} or {MODEL} not pulled",
-    ),
-]
-
-
 @pytest.fixture(scope="module")
 def embedder():
+    # Probed here, not at import, so unit-only runs never touch the network.
+    if not _model_available():
+        pytest.skip(f"Ollama not reachable at {OLLAMA_BASE_URL} or {MODEL} not pulled")
     client = OllamaEmbeddingsClient(base_url=OLLAMA_BASE_URL, model=MODEL)
     yield Embedder(client=client, model=MODEL)
     client.close()
