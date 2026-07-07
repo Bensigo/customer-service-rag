@@ -33,7 +33,7 @@ testpaths = ["tests"]
 addopts = "-q --import-mode=importlib"
 filterwarnings = ["error"]
 markers = [
-    "integration: needs a live backing service (Qdrant at QDRANT_URL); skipped when unreachable",
+    "integration: needs a live backing service (Qdrant at QDRANT_URL); skipped when unreachable, unless QDRANT_REQUIRED=1 makes that a failure",
 ]
 
 [tool.ruff]

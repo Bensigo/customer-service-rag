@@ -3,7 +3,10 @@
 Every behavior runs against two backends via the parametrized ``store``
 fixture: qdrant-client's in-process local mode (":memory:", always runs)
 and a real Qdrant server (marked ``integration``, skipped unless
-QDRANT_URL is set and reachable; CI provides a service container).
+QDRANT_URL is set and reachable). CI provides a service container and
+sets QDRANT_REQUIRED=1, which turns an unreachable Qdrant into a hard
+failure so a misconfigured pipeline cannot silently skip every
+integration test and still pass.
 
 Server-backed runs each use a collection named after the test plus a
 per-run token, deleted both before use and in teardown, so aborted,
@@ -25,6 +28,7 @@ from app.stores.vector_store import VectorStore
 # Read at import (collection) time: the autouse hermetic_settings fixture
 # scrubs QDRANT_URL from the environment before each test runs.
 _QDRANT_URL = os.environ.get("QDRANT_URL", "").rstrip("/")
+_QDRANT_REQUIRED = os.environ.get("QDRANT_REQUIRED") == "1"
 
 DIM = 8
 
@@ -40,14 +44,22 @@ def _server_reachable() -> bool:
 
 
 _SERVER_UP = _server_reachable()
-_SERVER_MARKS = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable"),
-]
 _BACKENDS = [
     pytest.param("memory", id="memory"),
-    pytest.param("server", id="server", marks=_SERVER_MARKS),
+    pytest.param("server", id="server", marks=pytest.mark.integration),
 ]
+
+
+def _require_server() -> None:
+    """Gate every server-backed test: skip when Qdrant is unavailable, unless
+    QDRANT_REQUIRED=1 (set in CI), where that becomes a hard failure - a
+    misconfigured pipeline must not pass by silently skipping integration."""
+    if _SERVER_UP:
+        return
+    reason = "QDRANT_URL unset or Qdrant unreachable"
+    if _QDRANT_REQUIRED:
+        pytest.fail(f"QDRANT_REQUIRED=1 but integration tests cannot run: {reason}", pytrace=False)
+    pytest.skip(reason)
 
 
 def _chunk(doc_id: str, version: int, seq: int) -> Chunk:
@@ -99,6 +111,7 @@ def store(request):
         yield store
         store.close()
         return
+    _require_server()
     collection = _collection_name(request.node.originalname)
     store = VectorStore(_QDRANT_URL, vector_size=DIM, collection=collection)
 
@@ -140,8 +153,8 @@ class TestEnsureCollection:
         assert _ids(store.search(_axis(0), k=1)) == ["faq:1:0"]
 
     @pytest.mark.integration
-    @pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable")
     def test_ensure_collection_dim_mismatch_fails_loudly(self):
+        _require_server()
         collection = _collection_name("dim_mismatch")
         _delete_collection(collection)
         original = VectorStore(_QDRANT_URL, vector_size=DIM, collection=collection)
@@ -168,8 +181,8 @@ class TestEnsureCollection:
             _delete_collection(collection)
 
     @pytest.mark.integration
-    @pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable")
     def test_ensure_collection_foreign_vector_config_fails_loudly(self):
+        _require_server()
         # a same-named collection created elsewhere with *named* vectors has
         # no single dimension to compare against; ensure_collection must
         # still raise the clear ValueError, not an AttributeError from

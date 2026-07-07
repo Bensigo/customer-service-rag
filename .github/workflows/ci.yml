@@ -41,5 +41,8 @@ jobs:
       - name: Test
         run: uv run pytest
         env:
-          # points the vector-store integration tests at the qdrant service
+          # points the vector-store integration tests at the qdrant service;
+          # QDRANT_REQUIRED turns an unreachable qdrant into a hard failure
+          # so CI can never pass by silently skipping the integration tests
           QDRANT_URL: http://localhost:6333
+          QDRANT_REQUIRED: "1"
