@@ -149,7 +149,11 @@ async def chat(
     session_id = body.session_id
     question = body.message  # validated: stripped and non-blank
 
-    history = sessions.get_history(session_id, limit=_HISTORY_LIMIT)
+    # get_history is blocking redis-py I/O: offload it like every other
+    # blocking stage so a slow Redis never freezes the event loop.
+    history = await anyio.to_thread.run_sync(
+        lambda: sessions.get_history(session_id, limit=_HISTORY_LIMIT)
+    )
 
     # Blocking retrieval off the event loop (default threadpool: concurrent).
     candidates = await anyio.to_thread.run_sync(retriever.retrieve, question)
@@ -171,8 +175,21 @@ async def chat(
         logger.warning("chat generation unavailable session=%s", session_id)
         return JSONResponse(status_code=503, content={"error": "generation_unavailable"})
 
-    sessions.append_turn(session_id, Turn(role="user", content=question))
-    sessions.append_turn(session_id, Turn(role="assistant", content=answer))
+    if not answer.strip():
+        # A blank answer (the thinking-model empty-output failure mode) is not
+        # a usable reply: treat it as generation-unavailable rather than
+        # returning a 200 with an empty answer. No turns are appended.
+        logger.warning("chat generation empty session=%s", session_id)
+        return JSONResponse(status_code=503, content={"error": "generation_unavailable"})
+
+    # Both turns are offloaded (blocking redis-py) and appended only after a
+    # successful generation, so a failed turn never lingers for a retry.
+    await anyio.to_thread.run_sync(
+        lambda: sessions.append_turn(session_id, Turn(role="user", content=question))
+    )
+    await anyio.to_thread.run_sync(
+        lambda: sessions.append_turn(session_id, Turn(role="assistant", content=answer))
+    )
 
     logger.info(
         "chat answered session=%s source_count=%d",
