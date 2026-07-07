@@ -1,4 +1,4 @@
-.PHONY: install lint format test run
+.PHONY: install lint format test run compose-check
 
 install:
 	uv sync
@@ -16,3 +16,6 @@ test:
 
 run:
 	uv run uvicorn --factory app.main:create_app --reload
+
+compose-check:
+	docker compose config -q
