@@ -161,6 +161,25 @@ class FlakyVectorStore(FakeVectorStore):
         super().upsert(chunks, vectors)
 
 
+class FlakyDeleteVectorStore(FakeVectorStore):
+    """Fails delete_document_version for one target version (network blip)."""
+
+    def __init__(self, fail_delete_of_version=None):
+        super().__init__()
+        self.fail_delete_of_version = fail_delete_of_version
+
+    def delete_document_version(self, doc_id, version):
+        if version == self.fail_delete_of_version:
+            self.fail_delete_of_version = None
+            raise ConnectionError("qdrant unreachable")
+        super().delete_document_version(doc_id, version)
+
+
+class FailingInvalidator:
+    def invalidate_document(self, doc_id):
+        raise ConnectionError("redis unreachable")
+
+
 class RecordingInvalidator:
     """Spy that snapshots both indexes at invalidation time, proving the
     invalidation ran only after every write landed."""
@@ -247,6 +266,24 @@ class TestSupersedeCleanup:
         assert _vector_ids(rig.vector_store) == new_ids
         # the pipeline also reclaims the superseded version's chunk rows
         assert rig.chunk_store.get_chunks(DOC, 1) == []
+
+    def test_sweep_vector_failure_leaves_old_version_consistent_in_both_indexes(self):
+        # The sweep deletes the flakiest store (vectors) first, so a Qdrant
+        # blip mid-sweep leaves the superseded version FULLY present in both
+        # indexes (consistent, re-swept next time) rather than half-removed
+        # from BM25 while still live in the vector store.
+        vector_store = FlakyDeleteVectorStore()
+        rig = _rig(vector_store=vector_store)
+        rig.service.ingest(DOC, TITLE, V1_TEXT)
+        old_ids = {chunk.id for chunk in rig.chunk_store.get_chunks(DOC, 1)}
+        vector_store.fail_delete_of_version = 1
+
+        with pytest.raises(IngestError):
+            rig.service.ingest(DOC, TITLE, V2_TEXT)
+
+        # v1 is still whole in BOTH indexes — never half-removed
+        assert old_ids <= _bm25_ids(rig.bm25, "reset password")
+        assert old_ids <= _vector_ids(rig.vector_store)
 
     def test_failed_supersede_cleanup_is_healed_by_the_next_ingest(self):
         bm25 = FlakyBm25Index()
@@ -381,6 +418,24 @@ class TestCacheInvalidation:
             rig.service.ingest(DOC, TITLE, V2_TEXT)
 
         assert [call[0] for call in rig.invalidator.calls] == [DOC]
+
+    def test_invalidator_failure_surfaces_as_ingest_error(self):
+        # The writes and sweep succeeded, but a fallible invalidator (#20's
+        # Redis impl) must not escape the pipeline's error contract as a raw
+        # exception — it surfaces as IngestError with the cause chained.
+        bm25 = FakeBm25Index()
+        vector_store = FakeVectorStore()
+        chunk_store = FakeChunkStore()
+        service = IngestionService(
+            chunk_store, bm25, FakeEmbedder(), vector_store, FailingInvalidator()
+        )
+
+        with pytest.raises(IngestError) as excinfo:
+            service.ingest(DOC, TITLE, V1_TEXT)
+
+        assert isinstance(excinfo.value.__cause__, ConnectionError)
+        # the document is still live — the failure was only cache invalidation
+        assert chunk_store.get_chunks(DOC, 1) != []
 
     def test_noop_invalidator_satisfies_the_protocol(self):
         assert NoopCacheInvalidator().invalidate_document(DOC) is None
