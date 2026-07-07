@@ -225,6 +225,32 @@ def test_http_client_raises_embedding_error_on_count_mismatch():
         client.embed(["first", "second"])
 
 
+def test_http_client_raises_embedding_error_on_non_json_success_body():
+    """A wrong OLLAMA_BASE_URL can hit a service that answers 200 with HTML."""
+
+    def handler(request):
+        return httpx2.Response(200, text="<html>not ollama</html>")
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError, match="non-JSON"):
+        client.embed(["text"])
+
+
+def test_http_client_bounds_error_body_size():
+    """Server-controlled error bodies must not flood the exception message."""
+
+    def handler(request):
+        return httpx2.Response(502, text="e" * 5000)
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        client.embed(["text"])
+
+    assert len(str(excinfo.value)) < 500
+
+
 def test_http_client_close_releases_the_connection():
     def handler(request):
         return httpx2.Response(200, json={"embeddings": [[0.1]]})
