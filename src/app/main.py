@@ -28,6 +28,7 @@ from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.pool import RetrieverPool
 from app.retrieval.reranker import create_reranker
 from app.stores.bm25_index import Bm25Index
+from app.stores.cache import ResponseCache
 from app.stores.chunk_store import ChunkStore
 from app.stores.sessions import SessionStore
 from app.stores.vector_store import VectorStore
@@ -148,6 +149,10 @@ def _build_chat_stack(
         session_store = SessionStore(settings.redis_url)
         closers.append(("session store", session_store.close))
 
+        # First-turn response cache: same Redis as sessions, its own client.
+        response_cache = ResponseCache(settings.redis_url)
+        closers.append(("response cache", response_cache.close))
+
         llm_client = create_llm_client(settings)
         closers.append(("llm client", llm_client.close))
     except Exception:
@@ -158,6 +163,7 @@ def _build_chat_stack(
         "retriever": retriever_pool,
         "reranker": reranker,
         "session_store": session_store,
+        "response_cache": response_cache,
         "llm_client": llm_client,
     }
     return state, list(reversed(closers))
@@ -171,10 +177,11 @@ def create_app() -> FastAPI:
         # so no Ollama/Qdrant/SQLite is touched and nothing needs closing.
         preinjected = getattr(app.state, "ingestion_service", None) is not None
         need_max_bytes = getattr(app.state, "max_upload_bytes", None) is None
+        need_cache_ttl = getattr(app.state, "cache_ttl_seconds", None) is None
         closers: list[tuple[str, Callable[[], None]]] = []
         # Only load Settings when something actually needs it, so unit tests
         # that inject a fake and preset the cap never require live config.
-        if not preinjected or need_max_bytes:
+        if not preinjected or need_max_bytes or need_cache_ttl:
             settings = get_settings()
             if not preinjected:
                 service, closers = _build_ingestion_service(settings)
@@ -193,6 +200,10 @@ def create_app() -> FastAPI:
                 closers = chat_closers + closers
             if need_max_bytes:
                 app.state.max_upload_bytes = settings.max_upload_bytes
+            # The chat cache read-through resolves its TTL from app.state, so
+            # unit tests that override the cache dep still get a real value.
+            if need_cache_ttl:
+                app.state.cache_ttl_seconds = settings.cache_ttl_seconds
         # single-permit limiter: extraction + ingestion run one at a time
         # off the event loop (see app.api.documents for why one worker)
         app.state.ingest_limiter = anyio.CapacityLimiter(1)

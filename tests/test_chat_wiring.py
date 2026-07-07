@@ -82,6 +82,15 @@ class _FakeSessionStore:
         self.closed = True
 
 
+class _FakeResponseCache:
+    def __init__(self, redis_url):
+        self.redis_url = redis_url
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _FakeReranker:
     def __init__(self):
         self.closed = False
@@ -104,6 +113,7 @@ def _patch(monkeypatch):
     monkeypatch.setattr(main, "Bm25Index", _FakeBm25)
     monkeypatch.setattr(main, "VectorStore", _FakeVectorStore)
     monkeypatch.setattr(main, "SessionStore", _FakeSessionStore)
+    monkeypatch.setattr(main, "ResponseCache", _FakeResponseCache)
     monkeypatch.setattr(main, "create_embedder", lambda settings: _FakeEmbedder())
     monkeypatch.setattr(main, "create_reranker", lambda settings: _FakeReranker())
     monkeypatch.setattr(main, "create_llm_client", lambda settings: _FakeLLM())
@@ -120,15 +130,25 @@ def test_build_chat_stack_wires_all_collaborators(monkeypatch):
     assert state["session_store"].redis_url == settings.redis_url
     assert isinstance(state["reranker"], _FakeReranker)
     assert isinstance(state["llm_client"], _FakeLLM)
+    # the response cache shares the same Redis as sessions
+    assert isinstance(state["response_cache"], _FakeResponseCache)
+    assert state["response_cache"].redis_url == settings.redis_url
     # the retriever seam exposes .retrieve (the pool)
     assert hasattr(state["retriever"], "retrieve")
     # every collaborator has a registered closer
     names = {name for name, _ in closers}
-    assert {"session store", "reranker", "retriever pool", "llm client"} <= names
+    assert {
+        "session store",
+        "response cache",
+        "reranker",
+        "retriever pool",
+        "llm client",
+    } <= names
     # close them all
     for _, close in closers:
         close()
     assert state["session_store"].closed
+    assert state["response_cache"].closed
     assert state["reranker"].closed
 
 
