@@ -11,8 +11,10 @@ trade-off for support documents.
 
 Uploads may carry customer PII, so exception messages name only the
 filename and byte size — never file content. Corrupt PDFs surface as
-``ExtractionError`` with the short pypdf diagnostic kept on the cause
-chain for debugging; a raw pypdf internal exception never escapes.
+``ExtractionError`` carrying just the pypdf exception class name: the
+instance and cause chain are dropped (``from None``) because pypdf
+parse errors can embed raw stream bytes in their messages, which must
+never reach tracebacks or logs. A raw pypdf internal never escapes.
 """
 
 import warnings
@@ -96,9 +98,12 @@ def _extract_pdf(filename: str, content: bytes) -> tuple[str | None, str]:
             metadata = reader.metadata
             title = None if metadata is None else metadata.title
         except Exception as exc:
-            # pypdf raises assorted internal types on corrupt input; map
-            # them all to the one typed error, content-free (PII rule)
+            # pypdf raises assorted internal types on corrupt input, and
+            # their messages can embed raw stream bytes — keep only the
+            # class name and sever the chain so no file content can reach
+            # a traceback or log line (PII rule)
             raise ExtractionError(
-                f"could not extract text from {filename!r} ({len(content)} bytes)"
-            ) from exc
+                f"could not extract text from {filename!r} "
+                f"({len(content)} bytes): {type(exc).__name__}"
+            ) from None
     return title, text

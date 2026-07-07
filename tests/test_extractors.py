@@ -1,3 +1,4 @@
+import traceback
 from pathlib import Path
 
 import pytest
@@ -109,4 +110,9 @@ def test_error_messages_never_include_file_content():
     assert b"SECRET-FIXTURE-MARKER" in corrupt  # the marker really is in the fixture
     with pytest.raises(ExtractionError) as excinfo:
         extract("corrupt.pdf", corrupt)
-    assert "SECRET-FIXTURE-MARKER" not in str(excinfo.value)
+    # the WHOLE formatted exception — message, cause chain, frames — must be
+    # content-free: pypdf parse errors can embed raw stream bytes in their
+    # messages, so the cause chain must be severed, keeping only the class name
+    formatted = "".join(traceback.format_exception(excinfo.value))
+    assert "SECRET-FIXTURE-MARKER" not in formatted
+    assert "pypdf" not in formatted  # no pypdf frames or messages in the chain
