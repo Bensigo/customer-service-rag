@@ -16,9 +16,9 @@ rediscovered while debugging:
 import sqlite3
 
 import pytest
-from app.stores.bm25_index import Bm25Index
 
 from app.models import Chunk
+from app.stores.bm25_index import Bm25Index
 
 
 def _chunk(doc_id: str, version: int, seq: int, text: str) -> Chunk:
