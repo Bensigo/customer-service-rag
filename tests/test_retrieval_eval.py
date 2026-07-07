@@ -23,6 +23,7 @@ import httpx2
 import pytest
 from qdrant_client import QdrantClient
 
+from app.eval.__main__ import format_report
 from app.eval.retrieval_eval import EvalReport, GoldenExample, load_golden, run_retrieval_eval
 from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.models import Chunk, RetrievedChunk
@@ -120,6 +121,35 @@ class TestHitRate:
 
         assert report.hit_rate_at_k == 0.5
         assert report.misses == ["q2"]
+
+
+class TestFormatReport:
+    """The CLI's table renderer: readable, and never leaks chunk text."""
+
+    def test_shows_hit_rate_k_and_total(self):
+        report = EvalReport(hit_rate_at_k=0.75, misses=["q2"])
+
+        rendered = format_report(report, k=5, total=4)
+
+        assert "hit-rate@5" in rendered
+        assert "75" in rendered  # 0.75 rendered as a percentage
+        assert "3/4" in rendered  # 3 of 4 questions hit
+
+    def test_lists_misses(self):
+        report = EvalReport(hit_rate_at_k=0.0, misses=["why won't it work", "help"])
+
+        rendered = format_report(report, k=5, total=2)
+
+        assert "why won't it work" in rendered
+        assert "help" in rendered
+
+    def test_no_misses_reads_cleanly(self):
+        report = EvalReport(hit_rate_at_k=1.0, misses=[])
+
+        rendered = format_report(report, k=3, total=2)
+
+        assert "hit-rate@3" in rendered
+        assert "2/2" in rendered
 
 
 class TestLoadGolden:
