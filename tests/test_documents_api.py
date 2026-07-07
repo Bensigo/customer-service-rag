@@ -46,10 +46,25 @@ def fake_service():
     return FakeIngestionService()
 
 
+def _app_with_fake(service):
+    """Build the app with a fake ingestion service, no live resources.
+
+    Pre-stashing ingestion_service on app.state makes the lifespan skip
+    building the real ChunkStore/Embedder/Qdrant, so unit tests run with
+    no backing services; the dependency override is the seam the route
+    actually resolves through.
+    """
+    app = create_app()
+    app.state.ingestion_service = service
+    # preset the cap so the lifespan never loads live Settings
+    app.state.max_upload_bytes = 5_000_000
+    app.dependency_overrides[get_ingestion_service] = lambda: service
+    return app
+
+
 @pytest.fixture
 def client(fake_service):
-    app = create_app()
-    app.dependency_overrides[get_ingestion_service] = lambda: fake_service
+    app = _app_with_fake(fake_service)
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -101,9 +116,9 @@ def test_put_same_doc_id_returns_version_2(client):
 
 
 def test_oversized_upload_returns_413(fake_service):
-    app = create_app()
-    app.dependency_overrides[get_ingestion_service] = lambda: fake_service
-    # shrink the cap so the test payload is small
+    app = _app_with_fake(fake_service)
+    # shrink the cap so the test payload is small; the lifespan honors a
+    # pre-set app.state value
     app.state.max_upload_bytes = 10
     with TestClient(app) as client:
         response = client.post(
@@ -175,8 +190,7 @@ def test_ingest_error_returns_422(client):
         def ingest(self, doc_id, title, text):
             raise IngestError(f"document {doc_id!r} contains no chunkable text")
 
-    app = create_app()
-    app.dependency_overrides[get_ingestion_service] = lambda: Boom()
+    app = _app_with_fake(Boom())
     with TestClient(app) as c:
         response = c.post(
             "/documents",
@@ -194,8 +208,7 @@ def test_error_responses_do_not_echo_file_content():
         def ingest(self, doc_id, title, text):
             raise IngestError("ingest blew up with the raw text: " + text)
 
-    app = create_app()
-    app.dependency_overrides[get_ingestion_service] = lambda: Boom()
+    app = _app_with_fake(Boom())
     with TestClient(app, raise_server_exceptions=False) as c:
         response = c.post(
             "/documents",
