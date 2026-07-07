@@ -4,9 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-customer-service-rag — a Retrieval-Augmented Generation (RAG) system for customer service.
+customer-service-rag — a Retrieval-Augmented Generation (RAG) system for customer service. Python 3.12 managed with uv, FastAPI, src layout (package `app` in `src/app/`, tests in `tests/`). Roadmap and architecture live in GitHub issue #1; an architecture overview is added here once the pipelines land (#22).
 
-The repository is newly initialized and has no application code yet. Once the stack is chosen and code lands, update this file with the actual build, test, and lint commands and an architecture overview.
+## Commands
+
+- `uv sync` — install/refresh dependencies (pinned via `uv.lock`)
+- `make test` — run the test suite (pytest)
+- `uv run pytest tests/test_config.py::test_settings_defaults -v` — run a single test
+- `make lint` — ruff lint + format check
+- `make format` — auto-format and auto-fix lint
+- `make run` — start the API locally (uvicorn with reload)
 
 ## Development Workflow
 
