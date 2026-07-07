@@ -132,11 +132,22 @@ class ChunkStore:
         return row[0]
 
     def delete_version(self, doc_id: str, version: int) -> None:
-        """Remove one version's chunks and document row (rollback/supersede cleanup)."""
+        """Remove one version's chunks and document row (rollback/supersede cleanup).
+
+        Re-activates the highest remaining version afterward, so a document
+        with any versions left always has exactly one active. This restores
+        the previously active version when a rollback deletes the just-created
+        one, and is a no-op during a supersede sweep (the active new version
+        is already the highest)."""
         with self._conn:
             self._conn.execute(
                 "DELETE FROM chunks WHERE doc_id = ? AND version = ?", (doc_id, version)
             )
             self._conn.execute(
                 "DELETE FROM documents WHERE doc_id = ? AND version = ?", (doc_id, version)
+            )
+            self._conn.execute(
+                "UPDATE documents SET active = 1 WHERE doc_id = ? AND version ="
+                " (SELECT MAX(version) FROM documents WHERE doc_id = ?)",
+                (doc_id, doc_id),
             )

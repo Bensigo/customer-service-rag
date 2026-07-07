@@ -145,3 +145,22 @@ class TestDeleteVersion:
         # the other version is untouched
         assert store.latest_version("faq") == 2
         assert len(store.get_chunks("faq", 2)) == 3
+
+    def test_delete_active_version_reactivates_the_highest_remaining(self, db_path, store):
+        # rollback deletes the just-created (active) version; the previously
+        # active version must become active again so the document is never
+        # left with zero active versions.
+        store.upsert_document("faq", "FAQ", _drafts(2))  # v1 active
+        store.upsert_document("faq", "FAQ v2", _drafts(3))  # v2 active, v1 inactive
+
+        store.delete_version("faq", 2)
+
+        active = _rows(db_path, "SELECT version FROM documents WHERE doc_id = 'faq' AND active = 1")
+        assert [row["version"] for row in active] == [1]
+
+    def test_delete_only_version_leaves_no_active_row(self, db_path, store):
+        store.upsert_document("faq", "FAQ", _drafts(2))
+
+        store.delete_version("faq", 1)
+
+        assert _rows(db_path, "SELECT version FROM documents WHERE doc_id = 'faq'") == []
