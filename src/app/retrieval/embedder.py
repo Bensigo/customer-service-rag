@@ -97,13 +97,19 @@ class OllamaEmbeddingsClient:
         except httpx2.HTTPStatusError as error:
             raise EmbeddingError(
                 f"Ollama embed request for model {self.model!r} failed with "
-                f"HTTP {error.response.status_code}: {error.response.text}"
+                f"HTTP {error.response.status_code}: {_bounded(error.response.text)}"
             ) from error
         except httpx2.HTTPError as error:
             raise EmbeddingError(
                 f"Ollama embed request to {self.base_url} failed: {error}"
             ) from error
-        embeddings = response.json().get("embeddings")
+        try:
+            embeddings = response.json().get("embeddings")
+        except ValueError as error:
+            raise EmbeddingError(
+                f"Ollama at {self.base_url} returned a non-JSON response — "
+                "is OLLAMA_BASE_URL pointing at an Ollama server?"
+            ) from error
         if not isinstance(embeddings, list) or len(embeddings) != len(texts):
             received = len(embeddings) if isinstance(embeddings, list) else "no"
             raise EmbeddingError(f"Ollama returned {received} embeddings for {len(texts)} inputs")
@@ -150,3 +156,10 @@ def create_embedder(settings: Settings) -> Embedder:
 def _templates_for(model: str) -> PromptTemplates:
     base_name = model.split(":", 1)[0]
     return _TEMPLATES.get(base_name, _DEFAULT_TEMPLATES)
+
+
+def _bounded(body: str, limit: int = 200) -> str:
+    """Cap server-controlled text before it lands in an exception message."""
+    if len(body) <= limit:
+        return body
+    return f"{body[:limit]}... [truncated {len(body) - limit} chars]"
