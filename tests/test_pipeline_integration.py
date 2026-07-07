@@ -15,9 +15,9 @@ import uuid
 
 import httpx2
 import pytest
-from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from qdrant_client import QdrantClient
 
+from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.retrieval.embedder import Embedder, OllamaEmbeddingsClient
 from app.stores.bm25_index import Bm25Index
 from app.stores.chunk_store import ChunkStore

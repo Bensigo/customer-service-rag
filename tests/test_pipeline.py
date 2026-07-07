@@ -17,13 +17,13 @@ import re
 from types import SimpleNamespace
 
 import pytest
+
 from app.ingestion.pipeline import (
     IngestError,
     IngestionService,
     IngestResult,
     NoopCacheInvalidator,
 )
-
 from app.models import Chunk, DocumentVersion
 
 DOC = "faq-password"
