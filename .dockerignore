@@ -1,0 +1,27 @@
+# Secrets — never in the build context
+.env
+.env.*
+
+# VCS / CI / tooling
+.git/
+.github/
+.claude/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local data and logs
+data/
+*.log
+
+# Not needed to build the image
+tests/
+Makefile
+CLAUDE.md
+compose.yaml
+Dockerfile
+.dockerignore
+.python-version

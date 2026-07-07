@@ -14,6 +14,8 @@ customer-service-rag — a Retrieval-Augmented Generation (RAG) system for custo
 - `make lint` — ruff lint + format check
 - `make format` — auto-format and auto-fix lint
 - `make run` — start the API locally (uvicorn with reload)
+- `docker compose up --build` — run the full stack (app :8000, Qdrant :6333, Redis :6379); Ollama is expected on the host at :11434, not in compose
+- `make compose-check` — validate compose.yaml
 
 ## Development Workflow
 
