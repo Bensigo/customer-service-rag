@@ -16,6 +16,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "qdrant-client>=1.18.0",
     "redis>=8.0.1",
+    "structlog>=26.1.0,<27.0.0",
     "uvicorn[standard]>=0.50.2",
 ]
 
