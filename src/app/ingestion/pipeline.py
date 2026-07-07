@@ -162,7 +162,13 @@ class IngestionService:
             ) from error
         stored = self._write_new_version(doc_id, title, drafts, vectors)
         self._sweep_superseded_versions(doc_id, stored.version)
-        self._invalidator.invalidate_document(doc_id)
+        try:
+            self._invalidator.invalidate_document(doc_id)
+        except Exception as error:
+            raise IngestError(
+                f"document {doc_id!r} version {stored.version} is ingested and live, but"
+                " cache invalidation failed; cached answers linger until they expire"
+            ) from error
         return IngestResult(doc_id=doc_id, version=stored.version, chunk_count=stored.chunk_count)
 
     def _write_new_version(
@@ -202,9 +208,11 @@ class IngestionService:
         reported (by store and error type) in the returned IngestError.
         """
         failures: list[str] = []
+        # flakiest store first (vectors reach Qdrant over the network), chunk
+        # store last so its chunk-row absence still proves a fully-gone version
         undo_steps = (
-            ("bm25 index", self._bm25_index.remove_document_version),
             ("vector store", self._vector_store.delete_document_version),
+            ("bm25 index", self._bm25_index.remove_document_version),
             ("chunk store", self._chunk_store.delete_version),
         )
         for store_name, undo in undo_steps:
@@ -235,8 +243,11 @@ class IngestionService:
             if not self._chunk_store.get_chunks(doc_id, version):
                 continue
             try:
-                self._bm25_index.remove_document_version(doc_id, version)
+                # flakiest store first, chunk store last: a mid-sweep failure
+                # leaves the version whole in the survivors rather than
+                # half-removed, and chunk-row absence still proves it fully gone
                 self._vector_store.delete_document_version(doc_id, version)
+                self._bm25_index.remove_document_version(doc_id, version)
                 self._chunk_store.delete_version(doc_id, version)
             except Exception as error:
                 raise IngestError(
