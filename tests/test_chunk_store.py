@@ -3,9 +3,9 @@ from contextlib import closing
 from datetime import datetime
 
 import pytest
-from app.stores.chunk_store import ChunkStore
 
 from app.models import Chunk, ChunkDraft, DocumentVersion
+from app.stores.chunk_store import ChunkStore
 
 
 def _drafts(count: int) -> list[ChunkDraft]:
@@ -117,7 +117,7 @@ class TestGetChunks:
 
 
 class TestGetChunksByIds:
-    def test_preserves_input_order_and_skips_missing_ids(self, store):
+    def test_get_chunks_by_ids_preserves_order_and_skips_missing(self, store):
         store.upsert_document("faq", "FAQ", _drafts(3))
 
         chunks = store.get_chunks_by_ids(["faq:1:2", "ghost:1:0", "faq:1:0"])
