@@ -33,10 +33,14 @@ class FakeEmbeddingsClient:
     def __init__(self, dim: int = 8):
         self.vector_dim = dim
         self.calls: list[list[str]] = []
+        self.closed = False
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [self._vector(text) for text in texts]
+
+    def close(self) -> None:
+        self.closed = True
 
     def _vector(self, text: str) -> list[float]:
         digest = hashlib.sha256(text.encode()).digest()
@@ -163,6 +167,17 @@ def test_dim_is_cached_after_one_probe_call():
     assert len(client.calls) == 1
 
 
+# --- lifecycle ---------------------------------------------------------------
+
+
+def test_embedder_close_closes_the_client():
+    embedder, client = make_embedder()
+
+    embedder.close()
+
+    assert client.closed
+
+
 # --- HTTP client -----------------------------------------------------------
 
 
@@ -237,6 +252,56 @@ def test_http_client_raises_embedding_error_on_non_json_success_body():
         client.embed(["text"])
 
 
+def test_http_client_raises_embedding_error_on_non_dict_json_success_body():
+    """A wrong OLLAMA_BASE_URL can hit a service that answers 200 with a JSON array."""
+
+    def handler(request):
+        return httpx2.Response(200, json=[1, 2])
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError, match="OLLAMA_BASE_URL"):
+        client.embed(["text"])
+
+
+def test_http_client_surfaces_only_the_json_error_field():
+    """Ollama's {"error": ...} field is the only server text worth relaying,
+    and it must reach the message stripped of control characters."""
+
+    def handler(request):
+        return httpx2.Response(500, json={"error": "model \x1b[31mnot\nfound"})
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        client.embed(["text"])
+
+    message = str(excinfo.value)
+    assert "model" in message and "found" in message
+    assert "{" not in message  # raw body is never interpolated wholesale
+    assert "\x1b" not in message and "\n" not in message
+
+
+def test_http_client_omits_unparseable_error_bodies():
+    """Non-JSON error bodies (proxy dumps, HTML) are summarized, not echoed."""
+
+    def handler(request):
+        return httpx2.Response(
+            500,
+            content=b"\x1b[31mfatal proxy dump\x1b[0m",
+            headers={"content-type": "text/html"},
+        )
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        client.embed(["text"])
+
+    message = str(excinfo.value)
+    assert "500" in message and "text/html" in message
+    assert "fatal" not in message and "\x1b" not in message
+
+
 def test_http_client_bounds_error_body_size():
     """Server-controlled error bodies must not flood the exception message."""
 
@@ -269,6 +334,22 @@ def test_http_client_error_messages_never_contain_input_text():
 
     def handler(request):
         return httpx2.Response(500, json={"error": "boom"})
+
+    client = make_http_client(handler)
+
+    with pytest.raises(EmbeddingError) as excinfo:
+        client.embed(["ssn 000-11-2222"])
+
+    assert "000-11-2222" not in str(excinfo.value)
+
+
+def test_http_client_error_messages_never_echo_request_body_via_server():
+    """A misconfigured OLLAMA_BASE_URL can hit a proxy that reflects the
+    request body in its error page — that reflection must not reach the
+    exception message, or chunk PII would land in logs."""
+
+    def handler(request):
+        return httpx2.Response(502, content=request.read(), headers={"content-type": "text/plain"})
 
     client = make_http_client(handler)
 
