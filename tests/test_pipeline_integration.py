@@ -67,30 +67,31 @@ def rig(tmp_path, request):
     if not _qdrant_reachable():
         pytest.skip(f"Qdrant not reachable at {QDRANT_URL}")
 
+    # finalizers are registered as each resource opens (they run LIFO), so
+    # everything is released even when a later setup step fails
     db_path = str(tmp_path / "rag.sqlite3")
     chunk_store = ChunkStore(db_path)
+    request.addfinalizer(chunk_store.close)
     # second connection to the same WAL database, as the app will wire it
     conn = sqlite3.connect(db_path)
+    request.addfinalizer(conn.close)
     bm25 = Bm25Index(conn)
     client = OllamaEmbeddingsClient(base_url=OLLAMA_BASE_URL, model=MODEL)
     embedder = Embedder(client=client, model=MODEL)
+    request.addfinalizer(embedder.close)
+    vector_size = embedder.dim()  # live Ollama round-trip
     collection = f"test11_e2e_{uuid.uuid4().hex[:12]}"
-    vector_store = VectorStore(QDRANT_URL, vector_size=embedder.dim(), collection=collection)
+    vector_store = VectorStore(QDRANT_URL, vector_size=vector_size, collection=collection)
 
-    def teardown() -> None:
+    def teardown_vector_store() -> None:
         vector_store.close()
-        embedder.close()
-        conn.close()
-        chunk_store.close()
         qdrant = QdrantClient(url=QDRANT_URL)
         try:
             qdrant.delete_collection(collection)
         finally:
             qdrant.close()
 
-    # registered before ensure_collection, so everything is released even
-    # when collection bootstrap itself fails
-    request.addfinalizer(teardown)
+    request.addfinalizer(teardown_vector_store)
     vector_store.ensure_collection()
     service = IngestionService(chunk_store, bm25, embedder, vector_store, NoopCacheInvalidator())
     yield {

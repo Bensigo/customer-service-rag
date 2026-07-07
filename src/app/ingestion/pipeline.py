@@ -20,9 +20,11 @@ need as little undo as possible, and compensates when they do:
    the new one, which is what heals a previously failed cleanup on the
    next ingest of the same document.
 4. The cache invalidator runs exactly once, only after the writes and
-   the sweep all succeeded - a failed ingest never invalidates, because
-   the cached answers still match what retrieval serves (the prior
-   version).
+   the sweep all succeeded - a failed ingest never invalidates. When the
+   writes failed, the cache is still right (retrieval kept the prior
+   version); when only the sweep failed, cached answers derived from the
+   prior version linger until the retry invalidates - see the windows
+   below.
 
 Known windows, none of which surface stale text permanently:
 - Between writing the new version and finishing the sweep, both
@@ -35,9 +37,10 @@ Known windows, none of which surface stale text permanently:
   before indexing into it, instead of relying on same-id overwrites,
   which would leak higher-seq entries when a re-chunk yields fewer
   chunks.
-- If the sweep fails, the superseded version stays searchable until the
-  next ingest of the document retries the sweep; the ingest is reported
-  as failed so callers know to retry.
+- If the sweep fails, the superseded version stays searchable - and any
+  answers cached from it stay unspoiled in the cache - until the next
+  ingest of the document retries the sweep and then invalidates; the
+  ingest is reported as failed so callers know to retry.
 
 Error messages carry document ids and version numbers only - never
 chunk text or titles, which may contain customer content.
@@ -117,6 +120,11 @@ class IngestionService:
     app-lifetime instance owned by the caller (never created or closed
     here), and the BM25 index is expected to sit on its own sqlite3
     connection to the same WAL database as the chunk store.
+
+    Ingests of the same document must not run concurrently (the app runs
+    one ingestion worker; SQLite's single-writer locking backs this up):
+    the compensation and sweep guarantees reason about one in-flight
+    version per document at a time.
     """
 
     def __init__(
