@@ -36,6 +36,26 @@ class Chunk:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievedChunk:
+    """A chunk surfaced by retrieval: the hydrated chunk, its fused
+    relevance score (RRF - comparable only within one result list), and
+    which indexes returned it (``sources`` is a subset of
+    {"bm25", "vector"}). The shared retrieval-facing type consumed by
+    reranking, context assembly, and chat."""
+
+    chunk: Chunk
+    score: float
+    sources: frozenset[str]
+
+    def __post_init__(self) -> None:
+        # Coerce to frozenset so instances are hashable and immutable
+        # regardless of what the caller passes (HybridRetriever builds the
+        # sources as a plain set). frozen=True requires object.__setattr__.
+        if not isinstance(self.sources, frozenset):
+            object.__setattr__(self, "sources", frozenset(self.sources))
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentVersion:
     """One stored version of a document, as returned by the chunk store
     after an upsert."""
