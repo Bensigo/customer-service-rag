@@ -15,7 +15,6 @@ Pure module - no I/O, no clients - so every spec here is deterministic.
 """
 
 from app.chat.context import assemble_context
-
 from app.models import Chunk, Message, RetrievedChunk, SourceRef, Turn
 
 QUESTION = "How do I reset my password?"
