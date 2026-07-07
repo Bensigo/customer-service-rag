@@ -5,14 +5,16 @@ fixture: qdrant-client's in-process local mode (":memory:", always runs)
 and a real Qdrant server (marked ``integration``, skipped unless
 QDRANT_URL is set and reachable; CI provides a service container).
 
-Server-backed runs each use a collection named after the test and delete
-it in teardown, so parallel or repeated runs never pollute each other.
-The dimension-mismatch spec is server-only: it needs two stores sharing
+Server-backed runs each use a collection named after the test plus a
+per-run token, deleted both before use and in teardown, so aborted,
+repeated, or concurrent runs never pollute each other. The
+dimension-mismatch spec is server-only: it needs two stores sharing
 one backend, and every ":memory:" client is its own isolated world.
 """
 
 import os
 import urllib.request
+import uuid
 
 import pytest
 from qdrant_client import QdrantClient, models
@@ -71,7 +73,17 @@ def _ids(results: list[tuple[str, float]]) -> list[str]:
     return [chunk_id for chunk_id, _ in results]
 
 
+# Computed once per test session: server collection names carry this token,
+# so leftovers of an aborted run and concurrent runs can never collide.
+_RUN_TOKEN = uuid.uuid4().hex[:12]
+
+
+def _collection_name(base: str) -> str:
+    return f"test10_{base}_{_RUN_TOKEN}"
+
+
 def _delete_collection(name: str) -> None:
+    """Drop the collection; deleting one that does not exist is a no-op."""
     client = QdrantClient(url=_QDRANT_URL)
     try:
         client.delete_collection(name)
@@ -87,12 +99,19 @@ def store(request):
         yield store
         store.close()
         return
-    collection = f"test10_{request.node.originalname}"
+    collection = _collection_name(request.node.originalname)
     store = VectorStore(_QDRANT_URL, vector_size=DIM, collection=collection)
+
+    def teardown() -> None:
+        store.close()
+        _delete_collection(collection)
+
+    # registered before ensure_collection, so the client and collection are
+    # cleaned up even when setup itself raises
+    request.addfinalizer(teardown)
+    _delete_collection(collection)  # a stale leftover would be silently reused
     store.ensure_collection()
     yield store
-    store.close()
-    _delete_collection(collection)
 
 
 class TestEnsureCollection:
@@ -123,7 +142,8 @@ class TestEnsureCollection:
     @pytest.mark.integration
     @pytest.mark.skipif(not _SERVER_UP, reason="QDRANT_URL unset or Qdrant unreachable")
     def test_ensure_collection_dim_mismatch_fails_loudly(self):
-        collection = "test10_dim_mismatch"
+        collection = _collection_name("dim_mismatch")
+        _delete_collection(collection)
         original = VectorStore(_QDRANT_URL, vector_size=DIM, collection=collection)
         try:
             original.ensure_collection()
@@ -154,7 +174,8 @@ class TestEnsureCollection:
         # no single dimension to compare against; ensure_collection must
         # still raise the clear ValueError, not an AttributeError from
         # poking .size on a dict
-        collection = "test10_foreign_vector_config"
+        collection = _collection_name("foreign_vector_config")
+        _delete_collection(collection)
         client = QdrantClient(url=_QDRANT_URL)
         try:
             client.create_collection(
