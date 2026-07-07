@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 import anyio
 from fastapi import FastAPI
 
-from app.api import documents
+from app.api import chat, documents
 from app.config import Settings, get_settings
 from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.retrieval.embedder import create_embedder
@@ -114,6 +114,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="customer-service-rag", lifespan=lifespan)
     app.include_router(documents.router)
+    app.include_router(chat.router)
 
     @app.get("/health")
     def health() -> dict[str, str]:
