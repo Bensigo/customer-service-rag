@@ -232,6 +232,51 @@ def test_generation_runs_off_the_event_loop_thread(two_chunks):
         assert name != "MainThread"
 
 
+def test_empty_generation_returns_503_and_appends_no_turns(two_chunks):
+    # A model that returns a blank answer (the thinking-model empty-output
+    # failure mode) must not surface a 200 with an empty answer.
+    sessions = FakeSessionStore()
+    app = _build_app(chunks=two_chunks, llm=FakeLLMClient(reply="   "), sessions=sessions)
+    with TestClient(app) as client:
+        response = _post(client)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json() == {"error": "generation_unavailable"}
+    assert sessions.turns == {}  # untouched, so a retry is clean
+
+
+def test_redis_calls_run_off_the_event_loop_thread(two_chunks):
+    # get_history + append_turn are blocking sync redis-py calls; they must
+    # be offloaded like retrieve/rerank/generate, or a slow Redis freezes the
+    # event loop. Assert they run off MainThread (deterministic — a timing
+    # test can't reliably detect event-loop blocking through TestClient).
+    class SpySessions(FakeSessionStore):
+        def __init__(self):
+            super().__init__()
+            self.thread_names = []
+
+        def get_history(self, session_id, limit=10):
+            self.thread_names.append(threading.current_thread().name)
+            return super().get_history(session_id, limit=limit)
+
+        def append_turn(self, session_id, turn):
+            self.thread_names.append(threading.current_thread().name)
+            super().append_turn(session_id, turn)
+
+    sessions = SpySessions()
+    app = _build_app(chunks=two_chunks, llm=FakeLLMClient(reply="ok"), sessions=sessions)
+    with TestClient(app) as client:
+        assert _post(client).status_code == 200
+    app.dependency_overrides.clear()
+
+    # 1 get_history + 2 append_turn = 3 calls, all offloaded to the anyio
+    # worker pool (event-loop work runs on an "asyncio-portal-*" thread; only
+    # anyio.to_thread work lands on an "AnyIO worker thread").
+    assert len(sessions.thread_names) == 3
+    assert all("worker" in name.lower() for name in sessions.thread_names)
+
+
 def test_slow_generation_does_not_block_concurrent_health(two_chunks):
     release = threading.Event()
 
