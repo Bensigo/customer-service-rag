@@ -24,6 +24,7 @@ pollute each other.
 
 import os
 import uuid
+from urllib.parse import urlsplit
 
 import pytest
 import redis
@@ -41,6 +42,15 @@ _DAY = 24 * 60 * 60
 
 def _key(session_id: str) -> str:
     return f"session:{session_id}"
+
+
+def _safe_url(url: str) -> str:
+    """Return scheme://host:port only, dropping any userinfo so credentials
+    embedded in REDIS_URL never reach a skip/fail message or CI log."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{host}{port}" if host else "(redacted)"
 
 
 def _unavailable(reason: str) -> None:
@@ -64,7 +74,7 @@ def redis_client():
         client.ping()
     except (redis.RedisError, OSError) as error:
         client.close()
-        _unavailable(f"Redis unreachable at {_REDIS_URL}: {error}")
+        _unavailable(f"Redis unreachable at {_safe_url(_REDIS_URL)}: {error}")
     yield client
     client.close()
 
@@ -190,3 +200,15 @@ class TestSessionIdValidation:
         # validation must come before the limit<=0 early-out
         with pytest.raises(ValueError, match="session id"):
             store.get_history(bad_id, limit=0)
+
+
+def test_safe_url_strips_credentials():
+    # Redis URLs commonly embed credentials; a skip/fail message built from
+    # the raw URL would leak them into CI logs.
+    from tests.test_sessions import _safe_url
+
+    safe = _safe_url("redis://user:secretpass@redis.example:6379/0")
+
+    assert "secretpass" not in safe
+    assert "user" not in safe
+    assert "redis.example:6379" in safe
