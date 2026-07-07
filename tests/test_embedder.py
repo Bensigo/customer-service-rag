@@ -105,7 +105,10 @@ def test_unknown_model_falls_back_to_default_prefixes():
     embedder.embed_passages(["reset my password"])
     embedder.embed_query("reset my password")
 
-    assert client.calls[0] != client.calls[1]
+    assert client.calls == [
+        ["search_document: reset my password"],
+        ["search_query: reset my password"],
+    ]
 
 
 @pytest.mark.parametrize("model", ["qwen3-embedding", "nomic-embed-text", "mystery-embed"])
