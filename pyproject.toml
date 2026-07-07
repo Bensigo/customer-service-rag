@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.139.0",
+    "httpx2>=2.5.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
     "pypdf>=6.14.2",
@@ -15,7 +16,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.5.0",
     "pytest>=9.1.1",
     "python-dotenv>=1.2.2",
     "ruff>=0.15.20",
@@ -33,7 +33,7 @@ testpaths = ["tests"]
 addopts = "-q --import-mode=importlib"
 filterwarnings = ["error"]
 markers = [
-    "integration: needs a live backing service (Qdrant at QDRANT_URL); skipped when unreachable, unless QDRANT_REQUIRED=1 makes that a failure",
+    "integration: hits a live backing service (Ollama at OLLAMA_BASE_URL, or Qdrant at QDRANT_URL); auto-skipped when unreachable, unless QDRANT_REQUIRED=1 makes an unreachable Qdrant a failure",
 ]
 
 [tool.ruff]

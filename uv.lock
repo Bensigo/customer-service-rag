@@ -74,6 +74,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pypdf" },
@@ -83,7 +84,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx2" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
@@ -92,6 +92,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.139.0" },
+    { name = "httpx2", specifier = ">=2.5.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pypdf", specifier = ">=6.14.2" },
@@ -101,7 +102,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx2", specifier = ">=2.5.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "ruff", specifier = ">=0.15.20" },
