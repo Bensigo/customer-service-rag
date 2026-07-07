@@ -73,6 +73,8 @@ _TEMPLATES: dict[str, PromptTemplates] = {
 class SupportsEmbed(Protocol):
     def embed(self, texts: list[str]) -> list[list[float]]: ...
 
+    def close(self) -> None: ...
+
 
 class OllamaEmbeddingsClient:
     """Thin client for Ollama's /api/embed endpoint."""
@@ -97,19 +99,25 @@ class OllamaEmbeddingsClient:
         except httpx2.HTTPStatusError as error:
             raise EmbeddingError(
                 f"Ollama embed request for model {self.model!r} failed with "
-                f"HTTP {error.response.status_code}: {_bounded(error.response.text)}"
+                f"HTTP {error.response.status_code}: {_error_detail(error.response)}"
             ) from error
         except httpx2.HTTPError as error:
             raise EmbeddingError(
                 f"Ollama embed request to {self.base_url} failed: {error}"
             ) from error
         try:
-            embeddings = response.json().get("embeddings")
+            data = response.json()
         except ValueError as error:
             raise EmbeddingError(
                 f"Ollama at {self.base_url} returned a non-JSON response — "
                 "is OLLAMA_BASE_URL pointing at an Ollama server?"
             ) from error
+        if not isinstance(data, dict):
+            raise EmbeddingError(
+                f"Ollama at {self.base_url} returned a non-object JSON response — "
+                "is OLLAMA_BASE_URL pointing at an Ollama server?"
+            )
+        embeddings = data.get("embeddings")
         if not isinstance(embeddings, list) or len(embeddings) != len(texts):
             received = len(embeddings) if isinstance(embeddings, list) else "no"
             raise EmbeddingError(f"Ollama returned {received} embeddings for {len(texts)} inputs")
@@ -144,8 +152,18 @@ class Embedder:
             self._cached_dim = len(vector)
         return self._cached_dim
 
+    def close(self) -> None:
+        """Close the underlying embeddings client; further calls raise."""
+        self.client.close()
+
 
 def create_embedder(settings: Settings) -> Embedder:
+    """Build the app-lifetime embedder for the configured Ollama model.
+
+    The returned instance owns a pooled HTTP client: construct it once at
+    startup (FastAPI lifespan), share it across requests, and call
+    ``close()`` on shutdown to release the connections.
+    """
     client = OllamaEmbeddingsClient(
         base_url=settings.ollama_base_url,
         model=settings.ollama_embed_model,
@@ -156,6 +174,30 @@ def create_embedder(settings: Settings) -> Embedder:
 def _templates_for(model: str) -> PromptTemplates:
     base_name = model.split(":", 1)[0]
     return _TEMPLATES.get(base_name, _DEFAULT_TEMPLATES)
+
+
+def _error_detail(response: httpx2.Response) -> str:
+    """Distill an untrusted error response into safe exception text.
+
+    Only Ollama's ``{"error": "..."}`` field is relayed — stripped of
+    non-printable characters, then bounded — so a proxy that echoes the
+    request body (which can hold chunk PII) or dumps control characters
+    never reaches exception messages or logs. Any other body shape is
+    summarized by its content type alone.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        return _bounded(_printable(data["error"]))
+    content_type = _bounded(_printable(response.headers.get("content-type", "unknown")), limit=60)
+    return f"[{content_type} body omitted]"
+
+
+def _printable(text: str) -> str:
+    """Drop control and other non-printable characters (keeps spaces)."""
+    return "".join(char for char in text if char.isprintable())
 
 
 def _bounded(body: str, limit: int = 200) -> str:
