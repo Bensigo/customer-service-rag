@@ -217,8 +217,10 @@ async def chat(
 
     Owns the request-scoped ``StageTimings`` and emits exactly one
     ``request_summary`` log line (ids/counts/durations/flags only, never
-    content) per request, across every return path — cache hit, grounded
-    refusal, generation failure, or a live answer.
+    content) per request, across every non-exceptional return path — cache
+    hit, grounded refusal, generation failure (503), or a live answer. An
+    unexpected exception propagates to FastAPI's 500 handler and is logged
+    there instead, without a summary line.
     """
     timings = StageTimings()
     result = await _run_chat(body, sessions, retriever, reranker, llm, cache, cache_ttl, timings)

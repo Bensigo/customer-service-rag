@@ -8,6 +8,7 @@ test_observability_integration.py.
 """
 
 import json
+import logging
 
 import pytest
 import structlog
@@ -207,9 +208,13 @@ def test_cache_hit_summary_skips_stage_timings(two_chunks, captured_logs):
 # --- content is NEVER logged ---
 
 
-def test_no_message_or_document_content_in_logs(two_chunks, captured_logs):
+def test_no_message_or_document_content_in_logs(two_chunks, captured_logs, caplog):
     """Drive a chat and an upload with sentinel PII strings and confirm none
-    of that content appears in ANY captured log line."""
+    of that content appears in ANY captured log line — across BOTH the
+    structlog summary events and the handlers' stdlib logging (chat.py /
+    documents.py log via logging.getLogger, which the structlog capture alone
+    would not see)."""
+    caplog.set_level(logging.DEBUG)
     secret_question = "SENTINEL_QUESTION_ssn_123_45_6789"
     secret_answer = "SENTINEL_ANSWER_card_4111_1111_1111_1111"
     secret_doc = b"SENTINEL_DOCUMENT_email_alice@example.com lives at 10 Downing St"
@@ -239,7 +244,10 @@ def test_no_message_or_document_content_in_logs(two_chunks, captured_logs):
         )
         assert up_resp.status_code == 201
 
-    blob = json.dumps(captured_logs, default=str)
+    # Scan both logging systems: the structlog events AND the stdlib records
+    # the handlers emit (caplog), so a future content-logging call in either
+    # is caught.
+    blob = json.dumps(captured_logs, default=str) + "\n" + caplog.text
     for sentinel in [
         secret_question,
         secret_answer,
