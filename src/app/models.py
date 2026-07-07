@@ -46,6 +46,15 @@ class Turn:
 
 
 @dataclass(frozen=True, slots=True)
+class Message:
+    """One chat-completion message in an assembled prompt, ready to send
+    to the LLM."""
+
+    role: Literal["system", "user", "assistant"]
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievedChunk:
     """A chunk surfaced by retrieval: the hydrated chunk, its fused
     relevance score (RRF - comparable only within one result list), and
@@ -63,6 +72,18 @@ class RetrievedChunk:
         # sources as a plain set). frozen=True requires object.__setattr__.
         if not isinstance(self.sources, frozenset):
             object.__setattr__(self, "sources", frozenset(self.sources))
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRef:
+    """Citation entry for one <source> block in an assembled prompt:
+    which chunk (and document) the block came from, with the raw
+    (unescaped) title. Returned to clients so answers can be traced
+    back to their documents."""
+
+    chunk_id: str
+    doc_id: str
+    title: str
 
 
 @dataclass(frozen=True, slots=True)
