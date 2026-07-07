@@ -19,6 +19,7 @@ local backend used by the unit tests.
 import uuid
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from app.models import Chunk
 
@@ -27,6 +28,17 @@ _POINT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "customer-service-rag.vecto
 
 def _point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, chunk_id))
+
+
+def _is_already_exists(error: Exception) -> bool:
+    """True when create_collection failed only because the collection exists.
+
+    A Qdrant server answers the conflict with HTTP 409; the in-process
+    local backend raises ValueError("Collection ... already exists").
+    """
+    if isinstance(error, UnexpectedResponse):
+        return error.status_code == 409
+    return "already exists" in str(error)
 
 
 class VectorStore:
@@ -48,13 +60,20 @@ class VectorStore:
         Re-embedding into a fresh collection is a deliberate operation.
         """
         if not self._client.collection_exists(self._collection):
-            self._client.create_collection(
-                collection_name=self._collection,
-                vectors_config=models.VectorParams(
-                    size=self._vector_size, distance=models.Distance.COSINE
-                ),
-            )
-            return
+            try:
+                self._client.create_collection(
+                    collection_name=self._collection,
+                    vectors_config=models.VectorParams(
+                        size=self._vector_size, distance=models.Distance.COSINE
+                    ),
+                )
+                return
+            except (UnexpectedResponse, ValueError) as error:
+                if not _is_already_exists(error):
+                    raise
+                # lost a create race: a concurrent bootstrapper made the
+                # collection between our exists-check and create - fall
+                # through and validate it like any pre-existing collection
         vectors_config = self._client.get_collection(self._collection).config.params.vectors
         if not isinstance(vectors_config, models.VectorParams):
             # named-vector (dict) or sparse-only (None) config: not a
