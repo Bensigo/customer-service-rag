@@ -199,3 +199,33 @@ class TestRemoveDocumentVersion:
         index.remove_document_version("faq", 1)  # already gone: no error
 
         assert _ids(index.search("refund", k=10)) == [_REFUND_LIGHT.id]
+
+
+def test_remove_does_not_conflate_colon_bearing_doc_ids(conn):
+    # doc "a" v1 has chunk id "a:1:0"; doc "a:1" v2 has chunk id "a:1:2:0".
+    # A prefix match on "a:1:" would delete both; removal must be exact.
+    index = Bm25Index(conn)
+    index.index_chunks([_chunk("a", 1, 0, "alpha refund text")])
+    index.index_chunks([_chunk("a:1", 2, 0, "bravo refund text")])
+
+    index.remove_document_version("a", 1)
+
+    remaining = conn.execute("SELECT chunk_id FROM chunks_fts").fetchall()
+    assert remaining == [("a:1:2:0",)]
+
+
+def test_index_chunks_dedupes_duplicate_ids_within_one_call(conn):
+    index = Bm25Index(conn)
+    chunk = _chunk("dup", 1, 0, "duplicate refund text")
+
+    index.index_chunks([chunk, chunk])
+
+    count = conn.execute("SELECT count(*) FROM chunks_fts").fetchone()[0]
+    assert count == 1
+
+
+def test_old_sqlite_is_rejected_with_clear_error(conn, monkeypatch):
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 3))
+
+    with pytest.raises(RuntimeError, match=r"3\.47"):
+        Bm25Index(conn)
