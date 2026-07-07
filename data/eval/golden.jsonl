@@ -1,18 +1,18 @@
-{"question": "i forgot my login and cant get in", "expected_doc_id": "password-reset"}
-{"question": "how long is the reset link good for", "expected_doc_id": "password-reset"}
-{"question": "didnt get the passwrd email", "expected_doc_id": "password-reset"}
-{"question": "where do i download my reciepts", "expected_doc_id": "billing"}
-{"question": "how do i swap the credit card you charge", "expected_doc_id": "billing"}
-{"question": "what happens if my payment doesnt go through", "expected_doc_id": "billing"}
-{"question": "when will my order show up", "expected_doc_id": "shipping"}
-{"question": "do you deliver outside the us", "expected_doc_id": "shipping"}
-{"question": "my package tracking hasnt updated in days", "expected_doc_id": "shipping"}
-{"question": "can i send this back for my money back", "expected_doc_id": "returns-refunds"}
-{"question": "how long till i see the refund", "expected_doc_id": "returns-refunds"}
-{"question": "item showed up broken what do i do", "expected_doc_id": "returns-refunds"}
-{"question": "i want to delete my account for good", "expected_doc_id": "account-deletion"}
-{"question": "changed my mind can i undo closing my acount", "expected_doc_id": "account-deletion"}
-{"question": "someone leaked my secret token", "expected_doc_id": "api-keys"}
-{"question": "how many developer keys can i have", "expected_doc_id": "api-keys"}
-{"question": "how do i reach a real person for help", "expected_doc_id": "contact-support"}
-{"question": "what hours is chat open", "expected_doc_id": "contact-support"}
+{"question": "i forgot my login and cant get in", "relevant_doc_ids": ["password-reset"]}
+{"question": "how long is the reset link good for", "relevant_doc_ids": ["password-reset"]}
+{"question": "didnt get the passwrd email", "relevant_doc_ids": ["password-reset"]}
+{"question": "where do i download my reciepts", "relevant_doc_ids": ["billing"]}
+{"question": "how do i swap the credit card you charge", "relevant_doc_ids": ["billing"]}
+{"question": "what happens if my payment doesnt go through", "relevant_doc_ids": ["billing"]}
+{"question": "when will my order show up", "relevant_doc_ids": ["shipping"]}
+{"question": "do you deliver outside the us", "relevant_doc_ids": ["shipping"]}
+{"question": "my package tracking hasnt updated in days", "relevant_doc_ids": ["shipping", "contact-support"]}
+{"question": "can i send this back for my money back", "relevant_doc_ids": ["returns-refunds"]}
+{"question": "how long till i see the refund", "relevant_doc_ids": ["returns-refunds"]}
+{"question": "item showed up broken what do i do", "relevant_doc_ids": ["returns-refunds"]}
+{"question": "i want to delete my account for good", "relevant_doc_ids": ["account-deletion"]}
+{"question": "changed my mind can i undo closing my acount", "relevant_doc_ids": ["account-deletion"]}
+{"question": "someone leaked my secret token", "relevant_doc_ids": ["api-keys", "contact-support"]}
+{"question": "how many developer keys can i have", "relevant_doc_ids": ["api-keys"]}
+{"question": "how do i reach a real person for help", "relevant_doc_ids": ["contact-support"]}
+{"question": "what hours is chat open", "relevant_doc_ids": ["contact-support"]}

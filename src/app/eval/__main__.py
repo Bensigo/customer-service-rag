@@ -2,8 +2,9 @@
 
 Wires the real retrieval stack from Settings, ingests the checked-in
 sample corpus into a *throwaway* SQLite database and a per-run Qdrant
-collection (never the configured production db/collection), runs
-hit-rate@k over the golden dataset, prints a readable table, and cleans
+collection (never the configured production db/collection), runs the
+retrieval metrics (hit-rate@k, precision@k, recall@k, MRR) over the
+golden dataset at a small k sweep, prints a readable table, and cleans
 up both throwaways on the way out.
 
 The eval needs live Ollama (embeddings) and Qdrant, so it is a local
@@ -11,7 +12,7 @@ The eval needs live Ollama (embeddings) and Qdrant, so it is a local
 tests/test_retrieval_eval.py cover the metric math with a fake
 retriever, and CI runs those.
 
-Nothing here prints chunk text: the table shows the hit rate and the
+Nothing here prints chunk text: the table shows the metrics and the
 list of missed *questions* (from the golden dataset, operator-authored)
 only.
 """
@@ -38,22 +39,28 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 SAMPLES_DIR = _REPO_ROOT / "data" / "samples"
 GOLDEN_PATH = _REPO_ROOT / "data" / "eval" / "golden.jsonl"
 
-DEFAULT_K = 5
+# hit-rate@5 is saturated on the 7-doc sample corpus (#14 baseline), so the
+# CLI sweeps low k where precision/recall/MRR actually discriminate.
+K_SWEEP = (1, 3, 5)
 
 
 def format_report(report: EvalReport, *, k: int, total: int) -> str:
     """Render an EvalReport as a readable multi-line table.
 
-    Shows hit-rate@k as a percentage and an ``N/total`` count, then lists
-    any missed questions. Never includes chunk text — only the hit rate
-    and the operator-authored questions that missed.
+    Shows all four metrics (hit-rate@k, precision@k, recall@k, MRR) as
+    percentages / a ratio, an ``N/total`` hit count, then lists any
+    missed questions. Never includes chunk text — only the metrics and
+    the operator-authored questions that missed.
     """
     hits = total - len(report.misses)
     lines = [
-        "Retrieval eval — hit-rate@k baseline",
+        f"Retrieval eval @k={k}",
         "=" * 40,
-        f"questions   : {total}",
-        f"hit-rate@{k}  : {report.hit_rate_at_k:.1%}  ({hits}/{total})",
+        f"questions    : {total}",
+        f"hit-rate@{k}   : {report.hit_rate_at_k:.1%}  ({hits}/{total})",
+        f"precision@{k}  : {report.precision_at_k:.1%}",
+        f"recall@{k}     : {report.recall_at_k:.1%}",
+        f"MRR          : {report.mrr:.3f}",
     ]
     if report.misses:
         lines.append("")
@@ -143,13 +150,15 @@ def main() -> int:
         retriever, service, closers = _build_retriever(settings, db_path, collection)
         try:
             corpus_size = _ingest_samples(service)
-            report = run_retrieval_eval(retriever, dataset, k=DEFAULT_K)
+            reports = {k: run_retrieval_eval(retriever, dataset, k=k) for k in K_SWEEP}
         finally:
             # closers already include dropping the throwaway collection (LIFO).
             _close_all(closers)
 
     print(f"corpus: {corpus_size} docs from {SAMPLES_DIR}")
-    print(format_report(report, k=DEFAULT_K, total=len(dataset)))
+    for k in K_SWEEP:
+        print()
+        print(format_report(reports[k], k=k, total=len(dataset)))
     return 0
 
 

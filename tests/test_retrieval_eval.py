@@ -7,8 +7,8 @@ subset of the real sample docs into a throwaway SQLite + a per-run Qdrant
 collection and runs the eval through the live embedder; it is marked
 ``integration`` and skips when Ollama or Qdrant is unreachable.
 
-The golden dataset is validated here too: every ``expected_doc_id`` must
-name a real ``data/samples/*.md`` file, so a typo in the dataset is a
+The golden dataset is validated here too: every id in ``relevant_doc_ids``
+must name a real ``data/samples/*.md`` file, so a typo in the dataset is a
 failing test rather than a silent always-miss at eval time.
 """
 
@@ -24,7 +24,15 @@ import pytest
 from qdrant_client import QdrantClient
 
 from app.eval.__main__ import format_report
-from app.eval.retrieval_eval import EvalReport, GoldenExample, load_golden, run_retrieval_eval
+from app.eval.retrieval_eval import (
+    EvalReport,
+    GoldenExample,
+    load_golden,
+    precision_at_k,
+    recall_at_k,
+    reciprocal_rank,
+    run_retrieval_eval,
+)
 from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.models import Chunk, RetrievedChunk
 from app.retrieval.embedder import Embedder, OllamaEmbeddingsClient
@@ -63,11 +71,11 @@ class FakeRetriever:
 
 class TestHitRate:
     def test_hits_two_of_three_questions(self):
-        # q1 and q3 have the expected doc in their results; q2 does not.
+        # q1 and q3 have a relevant doc in their results; q2 does not.
         dataset = [
-            GoldenExample(question="q1", expected_doc_id="alpha"),
-            GoldenExample(question="q2", expected_doc_id="beta"),
-            GoldenExample(question="q3", expected_doc_id="gamma"),
+            GoldenExample(question="q1", relevant_doc_ids=("alpha",)),
+            GoldenExample(question="q2", relevant_doc_ids=("beta",)),
+            GoldenExample(question="q3", relevant_doc_ids=("gamma",)),
         ]
         retriever = FakeRetriever(
             {
@@ -83,11 +91,11 @@ class TestHitRate:
         assert report.misses == ["q2"]
 
     def test_k_cutoff_excludes_relevant_chunk_past_rank_k(self):
-        # The expected doc sits at rank k+1, so it must NOT count as a hit at k.
+        # The relevant doc sits at rank k+1, so it must NOT count as a hit at k.
         k = 3
         ranked = [_retrieved(f"filler{i}", 1.0 - i * 0.01) for i in range(k)]
         ranked.append(_retrieved("target", 0.1))  # rank k+1
-        dataset = [GoldenExample(question="q", expected_doc_id="target")]
+        dataset = [GoldenExample(question="q", relevant_doc_ids=("target",))]
         retriever = FakeRetriever({"q": ranked})
 
         report = run_retrieval_eval(retriever, dataset, k=k)
@@ -96,11 +104,11 @@ class TestHitRate:
         assert report.misses == ["q"]
 
     def test_relevant_chunk_at_rank_k_is_a_hit(self):
-        # Boundary: the expected doc at exactly rank k still counts.
+        # Boundary: the relevant doc at exactly rank k still counts.
         k = 3
         ranked = [_retrieved(f"filler{i}", 1.0 - i * 0.01) for i in range(k - 1)]
         ranked.append(_retrieved("target", 0.1))  # rank k
-        dataset = [GoldenExample(question="q", expected_doc_id="target")]
+        dataset = [GoldenExample(question="q", relevant_doc_ids=("target",))]
         retriever = FakeRetriever({"q": ranked})
 
         report = run_retrieval_eval(retriever, dataset, k=k)
@@ -109,7 +117,7 @@ class TestHitRate:
         assert report.misses == []
 
     def test_all_hits_reports_full_rate_and_no_misses(self):
-        dataset = [GoldenExample(question="q1", expected_doc_id="alpha")]
+        dataset = [GoldenExample(question="q1", relevant_doc_ids=("alpha",))]
         retriever = FakeRetriever({"q1": [_retrieved("alpha", 0.9)]})
 
         report = run_retrieval_eval(retriever, dataset, k=5)
@@ -117,27 +125,113 @@ class TestHitRate:
         assert report.hit_rate_at_k == 1.0
         assert report.misses == []
 
-    def test_report_is_shaped_for_future_metrics(self):
-        # #39 adds precision@k/recall@k/mrr; the report must expose the two
-        # baseline fields today without those extras being required.
-        report = EvalReport(hit_rate_at_k=0.5, misses=["q2"])
-
-        assert report.hit_rate_at_k == 0.5
-        assert report.misses == ["q2"]
-
     def test_requests_at_least_k_candidates_from_the_retriever(self):
         # The default HybridRetriever returns top_n=12; measuring hit-rate
         # at a k above that would silently truncate. The harness must ask
         # the retriever for at least k candidates so retrieved[:k] is real.
         k = 25
         retriever = FakeRetriever({"q": [_retrieved("alpha", 0.9)]})
-        dataset = [GoldenExample(question="q", expected_doc_id="alpha")]
+        dataset = [GoldenExample(question="q", relevant_doc_ids=("alpha",))]
 
         run_retrieval_eval(retriever, dataset, k=k)
 
         (k_each, top_n) = retriever.calls[0]
         assert top_n >= k, "retriever asked for fewer than k results"
         assert k_each >= k, "each index asked for fewer than k candidates"
+
+
+class TestPrecisionAtK:
+    def test_precision_divides_relevant_hits_by_k(self):
+        # top-4: relevant, irrelevant, relevant, irrelevant -> 2 relevant / k=4.
+        ranked = [
+            _retrieved("alpha", 0.9),
+            _retrieved("other", 0.8),
+            _retrieved("alpha", 0.7),
+            _retrieved("nope", 0.6),
+        ]
+
+        assert precision_at_k(ranked, {"alpha"}, k=4) == 2 / 4
+
+    def test_precision_divides_by_k_not_by_number_retrieved(self):
+        # Only 2 chunks retrieved, both relevant, but k=4: precision is 2/4,
+        # not 2/2 — the denominator is k.
+        ranked = [_retrieved("alpha", 0.9), _retrieved("beta", 0.8)]
+
+        assert precision_at_k(ranked, {"alpha", "beta"}, k=4) == 2 / 4
+
+    def test_empty_ranked_list_is_zero(self):
+        assert precision_at_k([], {"alpha"}, k=5) == 0.0
+
+
+class TestRecallAtK:
+    def test_recall_counts_distinct_relevant_docs(self):
+        # 3 relevant docs; top-k covers 2 distinct ones (alpha twice, beta once).
+        ranked = [
+            _retrieved("alpha", 0.9),
+            _retrieved("alpha", 0.8),
+            _retrieved("beta", 0.7),
+            _retrieved("irrelevant", 0.6),
+        ]
+
+        assert recall_at_k(ranked, {"alpha", "beta", "gamma"}, k=5) == 2 / 3
+
+    def test_recall_only_counts_docs_within_top_k(self):
+        # gamma sits past the cutoff, so only alpha counts: 1 of 2.
+        ranked = [_retrieved("alpha", 0.9), _retrieved("gamma", 0.1)]
+
+        assert recall_at_k(ranked, {"alpha", "gamma"}, k=1) == 1 / 2
+
+    def test_empty_ranked_list_is_zero(self):
+        assert recall_at_k([], {"alpha"}, k=5) == 0.0
+
+
+class TestReciprocalRank:
+    def test_first_relevant_at_rank_three_is_one_third(self):
+        ranked = [
+            _retrieved("miss", 0.9),
+            _retrieved("miss", 0.8),
+            _retrieved("alpha", 0.7),  # rank 3, first relevant
+            _retrieved("alpha", 0.6),
+        ]
+
+        assert reciprocal_rank(ranked, {"alpha"}) == 1 / 3
+
+    def test_no_relevant_chunk_is_zero(self):
+        ranked = [_retrieved("miss", 0.9), _retrieved("nope", 0.8)]
+
+        assert reciprocal_rank(ranked, {"alpha"}) == 0.0
+
+    def test_empty_ranked_list_is_zero(self):
+        assert reciprocal_rank([], {"alpha"}) == 0.0
+
+
+class TestRunRetrievalEvalMetrics:
+    def test_reports_all_four_metrics_with_exact_values(self):
+        # Two questions with hand-planted rankings:
+        #   q1 relevant={alpha}: [alpha, other]  -> first rel at rank 1
+        #   q2 relevant={beta,gamma}: [x, beta, y] -> first rel at rank 2
+        dataset = [
+            GoldenExample(question="q1", relevant_doc_ids=("alpha",)),
+            GoldenExample(question="q2", relevant_doc_ids=("beta", "gamma")),
+        ]
+        retriever = FakeRetriever(
+            {
+                "q1": [_retrieved("alpha", 0.9), _retrieved("other", 0.8)],
+                "q2": [_retrieved("x", 0.9), _retrieved("beta", 0.8), _retrieved("y", 0.7)],
+            }
+        )
+
+        report = run_retrieval_eval(retriever, dataset, k=3)
+
+        # hit-rate: both questions hit -> 1.0
+        assert report.hit_rate_at_k == 1.0
+        assert report.misses == []
+        # precision@3: q1 has 1 relevant chunk in top-3 -> 1/3; q2 has 1 -> 1/3.
+        assert report.precision_at_k == ((1 / 3) + (1 / 3)) / 2
+        # recall@3: q1 covers 1/1; q2 covers 1 of 2 distinct relevant docs -> 1/2.
+        assert report.recall_at_k == (1.0 + (1 / 2)) / 2
+        # mrr: q1 first relevant at rank 1 -> 1; q2 at rank 2 -> 1/2.
+        assert report.mrr == (1.0 + (1 / 2)) / 2
 
 
 class TestFormatReport:
@@ -151,6 +245,21 @@ class TestFormatReport:
         assert "hit-rate@5" in rendered
         assert "75" in rendered  # 0.75 rendered as a percentage
         assert "3/4" in rendered  # 3 of 4 questions hit
+
+    def test_shows_all_four_metrics(self):
+        report = EvalReport(
+            hit_rate_at_k=1.0,
+            misses=[],
+            precision_at_k=0.5,
+            recall_at_k=0.8,
+            mrr=0.9,
+        )
+
+        rendered = format_report(report, k=3, total=2)
+
+        assert "precision@3" in rendered
+        assert "recall@3" in rendered
+        assert "MRR" in rendered
 
     def test_lists_misses(self):
         report = EvalReport(hit_rate_at_k=0.0, misses=["why won't it work", "help"])
@@ -173,31 +282,44 @@ class TestLoadGolden:
     def test_parses_jsonl_into_golden_examples(self, tmp_path):
         path = tmp_path / "g.jsonl"
         path.write_text(
-            '{"question": "how do i reset", "expected_doc_id": "password-reset"}\n'
-            '{"question": "where are invoices", "expected_doc_id": "billing"}\n',
+            '{"question": "how do i reset", "relevant_doc_ids": ["password-reset"]}\n'
+            '{"question": "where are invoices", '
+            '"relevant_doc_ids": ["billing", "returns-refunds"]}\n',
             encoding="utf-8",
         )
 
         dataset = load_golden(path)
 
         assert dataset == [
-            GoldenExample(question="how do i reset", expected_doc_id="password-reset"),
-            GoldenExample(question="where are invoices", expected_doc_id="billing"),
+            GoldenExample(question="how do i reset", relevant_doc_ids=("password-reset",)),
+            GoldenExample(
+                question="where are invoices", relevant_doc_ids=("billing", "returns-refunds")
+            ),
         ]
 
     def test_ignores_blank_lines(self, tmp_path):
         path = tmp_path / "g.jsonl"
         path.write_text(
-            '{"question": "q1", "expected_doc_id": "d1"}\n'
+            '{"question": "q1", "relevant_doc_ids": ["d1"]}\n'
             "\n"
             "   \n"
-            '{"question": "q2", "expected_doc_id": "d2"}\n',
+            '{"question": "q2", "relevant_doc_ids": ["d2"]}\n',
             encoding="utf-8",
         )
 
         dataset = load_golden(path)
 
         assert [ex.question for ex in dataset] == ["q1", "q2"]
+
+    def test_rejects_row_with_empty_relevant_list(self, tmp_path):
+        path = tmp_path / "g.jsonl"
+        path.write_text(
+            '{"question": "q1", "relevant_doc_ids": []}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError):
+            load_golden(path)
 
 
 class TestGoldenDatasetIntegrity:
@@ -211,20 +333,23 @@ class TestGoldenDatasetIntegrity:
         assert sample_stems, "no sample docs found"
         for example in dataset:
             assert example.question.strip(), "every question must be non-empty"
-            assert example.expected_doc_id in sample_stems, (
-                f"golden expected_doc_id {example.expected_doc_id!r} has no "
-                f"matching data/samples/*.md file"
-            )
+            assert example.relevant_doc_ids, "every row must list at least one relevant doc"
+            for doc_id in example.relevant_doc_ids:
+                assert doc_id in sample_stems, (
+                    f"golden relevant_doc_id {doc_id!r} has no matching data/samples/*.md file"
+                )
 
     def test_questions_are_not_verbatim_sample_sentences(self):
         # A trivially-easy eval (questions copied from the docs) is
-        # meaningless; guard that no question is a substring of its doc.
+        # meaningless; guard that no question is a substring of any of its
+        # relevant docs.
         dataset = load_golden(GOLDEN_PATH)
         for example in dataset:
-            doc_text = (SAMPLES_DIR / f"{example.expected_doc_id}.md").read_text(encoding="utf-8")
-            assert example.question.lower() not in doc_text.lower(), (
-                f"question {example.question!r} is copied verbatim from its doc"
-            )
+            for doc_id in example.relevant_doc_ids:
+                doc_text = (SAMPLES_DIR / f"{doc_id}.md").read_text(encoding="utf-8")
+                assert example.question.lower() not in doc_text.lower(), (
+                    f"question {example.question!r} is copied verbatim from doc {doc_id!r}"
+                )
 
 
 # --- Integration: end-to-end eval on a small subset against live services ---
@@ -233,15 +358,16 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").rstrip("/")
 MODEL = "nomic-embed-text"
 
-# A 3-doc subset with hand-written questions whose expected doc is obvious.
+# A 3-doc subset with hand-written questions whose relevant doc is obvious.
 SUBSET_QUESTIONS = [
     GoldenExample(
-        question="i cant log in and forgot my password", expected_doc_id="password-reset"
+        question="i cant log in and forgot my password",
+        relevant_doc_ids=("password-reset",),
     ),
-    GoldenExample(question="how do i change my billing card", expected_doc_id="billing"),
-    GoldenExample(question="when does my package arrive", expected_doc_id="shipping"),
+    GoldenExample(question="how do i change my billing card", relevant_doc_ids=("billing",)),
+    GoldenExample(question="when does my package arrive", relevant_doc_ids=("shipping",)),
 ]
-SUBSET_DOC_IDS = [ex.expected_doc_id for ex in SUBSET_QUESTIONS]
+SUBSET_DOC_IDS = [doc_id for ex in SUBSET_QUESTIONS for doc_id in ex.relevant_doc_ids]
 
 
 def _safe_url(url: str) -> str:
