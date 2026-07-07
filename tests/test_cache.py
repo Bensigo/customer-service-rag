@@ -108,6 +108,36 @@ def test_cached_response_json_roundtrip_is_lossless():
     assert restored == original
 
 
+class _StubValueClient:
+    """Returns a preset raw value on get; never raises."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self, key):
+        return self._value
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        "not json at all",
+        '{"answer": "x"}',  # missing "sources" -> KeyError
+        '{"answer": "x", "sources": 5}',  # non-list "sources" -> TypeError
+    ],
+)
+def test_get_corrupt_or_wrong_shaped_value_is_a_miss(corrupt, caplog):
+    # A foreign/corrupt/wrong-shaped value at cache:{fp} must degrade to a
+    # miss, never crash (defense in depth: only this cache writes the key).
+    cache = _cache_with_client(_StubValueClient(corrupt))
+    with caplog.at_level(logging.WARNING):
+        assert cache.get("deadbeef") is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
 # --- integration: real Redis ---
 
 

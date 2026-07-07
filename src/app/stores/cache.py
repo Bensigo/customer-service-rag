@@ -19,6 +19,11 @@ changed ``doc_id``, reads ``doc_tag:{doc_id}`` and deletes every listed
 moment its source document changes. **Get the key strings exactly right:
 #20 deletes through these literal names.**
 
+``doc_id`` is not re-validated here: it is held to ``[a-z0-9][a-z0-9-]{0,63}``
+at the document-upload API (its single ingest choke point), an alphabet
+with no ``:`` or whitespace, so a ``doc_tag:{doc_id}`` key can never
+collide with the ``cache:`` or ``session:`` keyspaces.
+
 Fail-open (non-negotiable): ANY Redis error on ``get`` is treated as a
 miss (return None, warn); ANY error on ``set`` skips the write (warn). A
 cache outage must never take chat down — the caller falls through to the
@@ -97,8 +102,9 @@ class ResponseCache:
             return None
         try:
             return CachedResponse.from_json(raw)
-        except (ValueError, KeyError):
-            # A corrupt/foreign value at this key is also a miss, not a crash.
+        except (ValueError, KeyError, TypeError):
+            # A corrupt/foreign/wrong-shaped value at this key is also a miss,
+            # not a crash (TypeError guards e.g. a non-list "sources").
             logger.warning("response cache entry unparseable; treating as miss")
             return None
 
