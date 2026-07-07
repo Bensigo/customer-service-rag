@@ -13,18 +13,24 @@ def test_settings_defaults():
     assert settings.redis_url == "redis://localhost:6379/0"
     assert settings.cache_ttl_seconds == 3600
     assert settings.max_upload_bytes == 5_000_000
+    assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.ollama_embed_model == "qwen3-embedding"
 
 
 def test_settings_reads_from_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
     monkeypatch.setenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     monkeypatch.setenv("CACHE_TTL_SECONDS", "120")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.internal:11434")
+    monkeypatch.setenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
     settings = Settings()
 
     assert settings.anthropic_api_key.get_secret_value() == "env-key"
     assert settings.anthropic_model == "claude-haiku-4-5-20251001"
     assert settings.cache_ttl_seconds == 120
+    assert settings.ollama_base_url == "http://ollama.internal:11434"
+    assert settings.ollama_embed_model == "nomic-embed-text"
 
 
 def test_settings_missing_api_key_raises():
