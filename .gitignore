@@ -22,8 +22,13 @@ coverage/
 .idea/
 .vscode/
 
-# Local data (SQLite chunk store, ingested documents)
-data/
+# Local data (SQLite chunk store, ingested documents) — but keep the
+# checked-in sample corpus and golden eval dataset (#14).
+data/*
+!data/samples/
+!data/eval/
+data/eval/*
+!data/eval/golden.jsonl
 
 # Logs
 *.log
