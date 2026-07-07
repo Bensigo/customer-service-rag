@@ -15,9 +15,9 @@ so the expected order is B, A, C - the chunk both indexes agree on wins.
 import logging
 
 import pytest
-from app.retrieval.hybrid import HybridRetriever
 
 from app.models import Chunk, RetrievedChunk
+from app.retrieval.hybrid import HybridRetriever
 
 QUERY = "how do I reset my password"
 QUERY_VECTOR = [0.25, -0.5, 0.75]
