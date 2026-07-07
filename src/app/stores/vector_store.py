@@ -55,7 +55,16 @@ class VectorStore:
                 ),
             )
             return
-        existing_size = self._client.get_collection(self._collection).config.params.vectors.size
+        vectors_config = self._client.get_collection(self._collection).config.params.vectors
+        if not isinstance(vectors_config, models.VectorParams):
+            # named-vector (dict) or sparse-only (None) config: not a
+            # collection this store created, and no single dim to compare
+            raise ValueError(
+                f"Qdrant collection {self._collection!r} was not created by this store"
+                f" (unexpected vector config of type {type(vectors_config).__name__});"
+                " refusing to touch it - use a different collection name"
+            )
+        existing_size = vectors_config.size
         if existing_size != self._vector_size:
             raise ValueError(
                 f"Qdrant collection {self._collection!r} holds {existing_size}-dimensional"
