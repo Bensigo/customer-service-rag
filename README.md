@@ -376,7 +376,7 @@ live `make eval` run:
   MRR 0.771 → 1.000.
 - The cost is **gemma4 latency**: reranking adds ~seconds per query (a live
   `/chat` request in the transcript spent ~10.5s in rerank vs ~0.4s in
-  retrieval). Run `make eval --rerank` for the full with/without latency
+  retrieval). Run `make eval-rerank` for the full with/without latency
   table. See the
   [reranker decision](docs/decisions.md#llm-pointwise-reranker-over-a-cross-encoder--quality-vs-latency).
 

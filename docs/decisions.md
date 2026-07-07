@@ -75,7 +75,7 @@ chunk to rank 1, which the already-saturated hit-rate@5 cannot show). The
 cost is **~seconds per candidate** of gemma4 latency (a live `/chat`
 request in this run spent ~10s in rerank vs ~0.4s in retrieval). Decision:
 ship the reranker **enabled** for quality; latency-sensitive deployments
-should gate it behind a flag or a smaller model. `make eval --rerank`
+should gate it behind a flag or a smaller model. `make eval-rerank`
 prints the full metric + latency table on demand. (#15)
 
 ### bge/query-prefix requirement generalized to per-model prompt templates

@@ -1,4 +1,4 @@
-.PHONY: install lint format test run eval compose-check
+.PHONY: install lint format test run eval eval-rerank compose-check
 
 install:
 	uv sync
@@ -19,6 +19,9 @@ run:
 
 eval:
 	uv run python -m app.eval
+
+eval-rerank:
+	uv run python -m app.eval --rerank
 
 compose-check:
 	docker compose config -q
