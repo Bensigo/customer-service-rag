@@ -17,12 +17,22 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import anyio
-from fastapi import FastAPI
+import anyio.to_thread
+import redis
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from qdrant_client import QdrantClient
 
 from app.api import chat, documents
 from app.chat.llm import create_llm_client
 from app.config import Settings, get_settings
 from app.ingestion.pipeline import IngestionService
+from app.observability import (
+    RequestIdMiddleware,
+    configure_logging,
+    readiness_report,
+    ready_checks_from_handles,
+)
 from app.retrieval.embedder import create_embedder
 from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.pool import RetrieverPool
@@ -34,6 +44,10 @@ from app.stores.sessions import SessionStore
 from app.stores.vector_store import VectorStore
 
 logger = logging.getLogger("app.main")
+
+# Short per-dependency timeout for the /ready probe: a readiness check must
+# fail fast rather than hang an orchestrator's health poll behind a slow dep.
+_READY_TIMEOUT_SECONDS = 2.0
 
 
 def _close_all(closers: list[tuple[str, Callable[[], None]]]) -> None:
@@ -174,7 +188,54 @@ def _build_chat_stack(
     return state, list(reversed(closers))
 
 
+def _build_ready_handles(
+    settings: Settings,
+) -> tuple[dict[str, object], list[tuple[str, Callable[[], None]]]]:
+    """Build dedicated, short-timeout handles for the /ready probe.
+
+    These are separate from the ingest/chat connections on purpose: the
+    readiness probe runs on the request event loop's threadpool and must
+    never share a connection with the single-thread ingest writer or a
+    pooled reader (the #12 threading contract). Each is a tiny client that
+    does one trivial round-trip and fails fast on a short timeout.
+
+    Returns the handles to place on app.state and their closers (reverse
+    construction order), so a failure partway through startup still tears
+    down everything already built.
+    """
+    closers: list[tuple[str, Callable[[], None]]] = []
+    try:
+        # A read-only SQLite connection for `SELECT 1`; its own connection so
+        # a probe never touches the ingest writer or a pooled reader.
+        sqlite_conn = sqlite3.connect(
+            settings.db_path, check_same_thread=False, timeout=_READY_TIMEOUT_SECONDS
+        )
+        closers.append(("ready sqlite", sqlite_conn.close))
+        qdrant_client = QdrantClient(
+            location=settings.qdrant_url, timeout=int(_READY_TIMEOUT_SECONDS)
+        )
+        closers.append(("ready qdrant", qdrant_client.close))
+        redis_client = redis.Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=_READY_TIMEOUT_SECONDS,
+            socket_timeout=_READY_TIMEOUT_SECONDS,
+        )
+        closers.append(("ready redis", redis_client.close))
+    except Exception:
+        _close_all(list(reversed(closers)))
+        raise
+
+    handles: dict[str, object] = {
+        "ready_sqlite": sqlite_conn,
+        "ready_qdrant": qdrant_client,
+        "ready_redis": redis_client,
+    }
+    return handles, list(reversed(closers))
+
+
 def create_app() -> FastAPI:
+    configure_logging()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Test seam: when a caller has pre-stashed an ingestion_service
@@ -203,6 +264,16 @@ def create_app() -> FastAPI:
                 # closers run in reverse order; chat resources built after
                 # ingest must be torn down before it.
                 closers = chat_closers + closers
+                # Dedicated /ready probe handles (#21): their own tiny,
+                # short-timeout clients, never the ingest/chat connections.
+                try:
+                    ready_handles, ready_closers = _build_ready_handles(settings)
+                except Exception:
+                    _close_all(closers)
+                    raise
+                for key, value in ready_handles.items():
+                    setattr(app.state, key, value)
+                closers = ready_closers + closers
             if need_max_bytes:
                 app.state.max_upload_bytes = settings.max_upload_bytes
             # The chat cache read-through resolves its TTL from app.state, so
@@ -218,6 +289,9 @@ def create_app() -> FastAPI:
             _close_all(closers)
 
     app = FastAPI(title="customer-service-rag", lifespan=lifespan)
+    # Request-id middleware wraps every request: bind the id into the log
+    # context and echo it in the response header (#21).
+    app.add_middleware(RequestIdMiddleware)
     app.include_router(documents.router)
     app.include_router(chat.router)
 
@@ -225,5 +299,32 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         """Liveness probe: process is up. No dependency checks (readiness is #21)."""
         return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready(request: Request) -> JSONResponse:
+        """Readiness probe (#21): ping SQLite, Qdrant, and Redis with short
+        timeouts. 200 when all up; 503 naming the down dependency otherwise.
+
+        Never leaks a connection string or credential: a failed check is
+        reported by dependency name only (see readiness_report). Unlike
+        /health, this deliberately touches the (dedicated) dependency
+        handles — an orchestrator uses it to decide whether to route
+        traffic. The blocking pings run off the event loop so a slow or
+        hung dependency never freezes concurrent requests.
+        """
+        checks = ready_checks_from_handles(
+            sqlite=request.app.state.ready_sqlite,
+            qdrant=request.app.state.ready_qdrant,
+            redis=request.app.state.ready_redis,
+        )
+        is_ready, statuses = await anyio.to_thread.run_sync(readiness_report, checks)
+        status_code = 200 if is_ready else 503
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": "ready" if is_ready else "not_ready",
+                "dependencies": statuses,
+            },
+        )
 
     return app
