@@ -230,9 +230,7 @@ def test_schema_uses_no_contentless_options_for_portability(conn):
     # FTS5 table keeps the index working on any SQLite with FTS5 (>= 3.9).
     Bm25Index(conn)
 
-    sql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'"
-    ).fetchone()[0]
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").fetchone()[0]
 
     assert "contentless" not in sql.lower()
     assert "content=" not in sql.lower()
