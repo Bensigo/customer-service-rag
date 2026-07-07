@@ -163,6 +163,19 @@ def test_invalid_doc_id_in_put_path_returns_422(client, fake_service):
     assert fake_service.calls == []
 
 
+def test_doc_id_with_trailing_newline_returns_422(client, fake_service):
+    # `$` matches before a terminal newline, so a slug + trailing "\n"
+    # would slip past re.match; the id must be rejected outright.
+    response = client.post(
+        "/documents",
+        files={"file": ("faq.txt", b"body", "text/plain")},
+        data={"doc_id": "support-faq\n"},
+    )
+
+    assert response.status_code == 422
+    assert fake_service.calls == []
+
+
 def test_filename_with_no_sluggable_chars_returns_422(client, fake_service):
     # a filename stem that reduces to an empty/invalid slug must be rejected,
     # not silently coerced into an arbitrary doc_id

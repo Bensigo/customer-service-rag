@@ -53,7 +53,8 @@ router = APIRouter(tags=["documents"])
 # a strict charset: lowercase alphanumerics and hyphens, 1..64 chars,
 # never leading with a hyphen. Kept in lockstep with IngestionService's
 # documented precondition.
-_DOC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# \Z (not $) so a trailing newline can't slip through; matched with fullmatch.
+_DOC_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
 
 # 64 KiB read granularity: large enough to be cheap, small enough that
 # the over-limit read never buffers much past the cap.
@@ -171,7 +172,7 @@ async def _handle_upload(
 ) -> _UploadOutcome:
     filename = _basename(upload.filename or "")
     resolved_id = doc_id if doc_id is not None else _slug_from_filename(filename)
-    if not _DOC_ID_RE.match(resolved_id):
+    if not _DOC_ID_RE.fullmatch(resolved_id):
         # 422: the id is unusable (bad explicit id, or a filename with no
         # sluggable characters). Message names the offending id only.
         raise HTTPException(
