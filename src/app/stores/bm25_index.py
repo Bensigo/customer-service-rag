@@ -1,17 +1,15 @@
 """BM25 full-text index of chunk text on SQLite FTS5.
 
-Table mode: chunks_fts is a *contentless-delete* FTS5 table
-(content='' with contentless_delete=1, plus contentless_unindexed=1 so
-the chunk_id key survives a round-trip) rather than external-content.
-Chunk text already lives authoritatively in the chunk store's "chunks"
-table (#6) and hits are hydrated via ChunkStore.get_chunks_by_ids, so
-this table keeps only the inverted index and the chunk id - never a
-second copy of the text. External-content mode would instead couple this
-index to the chunks table's schema and rowids and silently return
-garbage whenever the two drifted apart; this class only receives a
-connection and cannot guarantee that table even exists. The chosen
-options require SQLite >= 3.47 (2024-10), which the interpreter's
-bundled SQLite satisfies.
+Table mode: chunks_fts is a *plain* (own-content) FTS5 table storing the
+chunk id, doc id, and version as UNINDEXED columns alongside the indexed
+text. This mode works on any SQLite with FTS5 (>= 3.9, 2015); the
+contentless-delete options that would let the table hold only the
+inverted index require SQLite >= 3.47 (2024-10), which neither the CI
+runner nor common distros (e.g. Ubuntu 24.04) bundle, so they are
+deliberately avoided. The cost is a second copy of the chunk text living
+in this index in addition to the authoritative copy in the chunk store
+(#6) - acceptable for this demo, and hits are still hydrated via
+ChunkStore.get_chunks_by_ids rather than read back from here.
 
 Score normalization: FTS5's bm25() - aliased by "rank" - returns
 *negative* values where lower means a better match, so results are
@@ -31,14 +29,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     chunk_id UNINDEXED,
     doc_id UNINDEXED,
     version UNINDEXED,
-    text,
-    content='',
-    contentless_delete=1,
-    contentless_unindexed=1
+    text
 )
 """
-
-_MIN_SQLITE = (3, 47, 0)
 
 _TERM_RE = re.compile(r"\w+")
 
@@ -59,11 +52,6 @@ class Bm25Index:
     """BM25 postings over chunk text, keyed by chunk id, on a caller-owned connection."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
-        if sqlite3.sqlite_version_info < _MIN_SQLITE:
-            raise RuntimeError(
-                "Bm25Index requires SQLite >= 3.47 for contentless-delete FTS5; "
-                f"this interpreter bundles {sqlite3.sqlite_version}"
-            )
         self._conn = conn
         conn.execute(_SCHEMA)
 

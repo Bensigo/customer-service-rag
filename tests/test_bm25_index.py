@@ -224,8 +224,13 @@ def test_index_chunks_dedupes_duplicate_ids_within_one_call(conn):
     assert count == 1
 
 
-def test_old_sqlite_is_rejected_with_clear_error(conn, monkeypatch):
-    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 3))
+def test_schema_uses_no_contentless_options_for_portability(conn):
+    # contentless_delete / contentless_unindexed require SQLite >= 3.47,
+    # which the CI runner's bundled SQLite (3.45.x) does not have. A plain
+    # FTS5 table keeps the index working on any SQLite with FTS5 (>= 3.9).
+    Bm25Index(conn)
 
-    with pytest.raises(RuntimeError, match=r"3\.47"):
-        Bm25Index(conn)
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts'").fetchone()[0]
+
+    assert "contentless" not in sql.lower()
+    assert "content=" not in sql.lower()
