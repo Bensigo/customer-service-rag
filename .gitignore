@@ -22,5 +22,8 @@ coverage/
 .idea/
 .vscode/
 
+# Local data (SQLite chunk store, ingested documents)
+data/
+
 # Logs
 *.log

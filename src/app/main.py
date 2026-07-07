@@ -3,6 +3,3 @@ from fastapi import FastAPI
 
 def create_app() -> FastAPI:
     return FastAPI(title="customer-service-rag")
-
-
-app = create_app()

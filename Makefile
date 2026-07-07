@@ -8,11 +8,11 @@ lint:
 	uv run ruff format --check .
 
 format:
-	uv run ruff format .
 	uv run ruff check --fix .
+	uv run ruff format .
 
 test:
 	uv run pytest
 
 run:
-	uv run uvicorn app.main:app --reload
+	uv run uvicorn --factory app.main:create_app --reload
