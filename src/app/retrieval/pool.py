@@ -64,7 +64,13 @@ class RetrieverPool:
             if self._idle:
                 return self._idle.pop()
         # No idle instance but a slot is free: build a new one (its own conns).
-        entry = self._factory()
+        # If the factory fails (e.g. the DB can't be opened), release the slot
+        # so a build failure can't permanently shrink the pool toward deadlock.
+        try:
+            entry = self._factory()
+        except Exception:
+            self._slots.release()
+            raise
         with self._lock:
             self._all.append(entry)
         return entry

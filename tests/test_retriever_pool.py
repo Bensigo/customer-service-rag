@@ -92,6 +92,39 @@ def test_never_hands_one_retriever_to_two_threads_at_once():
     pool.close()
 
 
+def test_factory_failure_releases_the_slot():
+    # A factory that fails must not permanently consume a slot, or the pool
+    # would shrink toward deadlock. After `size` failures the pool must still
+    # be usable once the factory recovers.
+    calls = [0]
+
+    def flaky_factory():
+        calls[0] += 1
+        if calls[0] <= 2:
+            raise RuntimeError("cannot open db")
+
+        class _R:
+            def retrieve(self, query, *, k_each=20, top_n=12):
+                return [query]
+
+            def close(self):
+                pass
+
+        r = _R()
+        return r, r.close
+
+    pool = RetrieverPool(flaky_factory, size=1)
+
+    for _ in range(2):
+        try:
+            pool.retrieve("q")
+        except RuntimeError:
+            pass
+    # The slot was released each time; a recovered factory now succeeds.
+    assert pool.retrieve("q") == ["q"]
+    pool.close()
+
+
 def test_close_closes_every_created_retriever():
     created, live, max_seen, lock = [], [0], [0], threading.Lock()
     pool = RetrieverPool(_make_factory(created, live, max_seen, lock), size=2)
