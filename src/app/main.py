@@ -20,11 +20,16 @@ import anyio
 from fastapi import FastAPI
 
 from app.api import chat, documents
+from app.chat.llm import create_llm_client
 from app.config import Settings, get_settings
 from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
 from app.retrieval.embedder import create_embedder
+from app.retrieval.hybrid import HybridRetriever
+from app.retrieval.pool import RetrieverPool
+from app.retrieval.reranker import create_reranker
 from app.stores.bm25_index import Bm25Index
 from app.stores.chunk_store import ChunkStore
+from app.stores.sessions import SessionStore
 from app.stores.vector_store import VectorStore
 
 logger = logging.getLogger("app.main")
@@ -86,6 +91,77 @@ def _build_ingestion_service(
     return service, list(reversed(closers))
 
 
+# How many concurrent read connections the chat path may hold open.
+_RETRIEVER_POOL_SIZE = 4
+
+
+def _build_chat_stack(
+    settings: Settings,
+) -> tuple[dict[str, object], list[tuple[str, Callable[[], None]]]]:
+    """Construct the chat/retrieval collaborators and their closers.
+
+    Ownership is deliberately separate from the ingest path. The embedder
+    and vector store are read-only network clients built fresh here (their
+    own pooled HTTP / Qdrant clients); the retriever POOL gives each of
+    its slots its OWN SQLite chunk-store and BM25 read connections, so no
+    reader thread ever shares a connection with another reader or with the
+    ingest writer (the #12 threading hazard). WAL mode keeps these
+    independent read connections concurrent and isolated from writes.
+
+    Returns the collaborators to place on app.state and an ordered list of
+    closers (reverse construction order), so a failure partway through
+    startup still tears down everything already built.
+    """
+    closers: list[tuple[str, Callable[[], None]]] = []
+    try:
+        embedder = create_embedder(settings)
+        closers.append(("chat embedder", embedder.close))
+        vector_size = embedder.dim()  # live Ollama round-trip on first call
+        vector_store = VectorStore(
+            settings.qdrant_url,
+            vector_size=vector_size,
+            collection=settings.qdrant_collection,
+        )
+        closers.append(("chat vector store", vector_store.close))
+        vector_store.ensure_collection()
+
+        def _make_retriever() -> tuple[HybridRetriever, Callable[[], None]]:
+            # One dedicated read connection pair per pool slot, to the same
+            # WAL database the ingest path writes — never a shared connection.
+            chunk_store = ChunkStore(settings.db_path)
+            bm25_conn = sqlite3.connect(settings.db_path, check_same_thread=False)
+            bm25_index = Bm25Index(bm25_conn)
+
+            def _close() -> None:
+                chunk_store.close()
+                bm25_conn.close()
+
+            retriever = HybridRetriever(bm25_index, embedder, vector_store, chunk_store)
+            return retriever, _close
+
+        retriever_pool = RetrieverPool(_make_retriever, size=_RETRIEVER_POOL_SIZE)
+        closers.append(("retriever pool", retriever_pool.close))
+
+        reranker = create_reranker(settings)
+        closers.append(("reranker", reranker.close))
+
+        session_store = SessionStore(settings.redis_url)
+        closers.append(("session store", session_store.close))
+
+        llm_client = create_llm_client(settings)
+    except Exception:
+        _close_all(list(reversed(closers)))
+        raise
+
+    state: dict[str, object] = {
+        "retriever": retriever_pool,
+        "reranker": reranker,
+        "session_store": session_store,
+        "llm_client": llm_client,
+    }
+    return state, list(reversed(closers))
+
+
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -102,6 +178,18 @@ def create_app() -> FastAPI:
             if not preinjected:
                 service, closers = _build_ingestion_service(settings)
                 app.state.ingestion_service = service
+                # The chat/retrieval stack shares the same "skip when a fake
+                # is preinjected" seam so the unit suite stays offline.
+                try:
+                    chat_state, chat_closers = _build_chat_stack(settings)
+                except Exception:
+                    _close_all(closers)
+                    raise
+                for key, value in chat_state.items():
+                    setattr(app.state, key, value)
+                # closers run in reverse order; chat resources built after
+                # ingest must be torn down before it.
+                closers = chat_closers + closers
             if need_max_bytes:
                 app.state.max_upload_bytes = settings.max_upload_bytes
         # single-permit limiter: extraction + ingestion run one at a time
