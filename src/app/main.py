@@ -22,13 +22,13 @@ from fastapi import FastAPI
 from app.api import chat, documents
 from app.chat.llm import create_llm_client
 from app.config import Settings, get_settings
-from app.ingestion.pipeline import IngestionService, NoopCacheInvalidator
+from app.ingestion.pipeline import IngestionService
 from app.retrieval.embedder import create_embedder
 from app.retrieval.hybrid import HybridRetriever
 from app.retrieval.pool import RetrieverPool
 from app.retrieval.reranker import create_reranker
 from app.stores.bm25_index import Bm25Index
-from app.stores.cache import ResponseCache
+from app.stores.cache import RedisCacheInvalidator, ResponseCache
 from app.stores.chunk_store import ChunkStore
 from app.stores.sessions import SessionStore
 from app.stores.vector_store import VectorStore
@@ -82,13 +82,18 @@ def _build_ingestion_service(
         )
         closers.append(("vector store", vector_store.close))
         vector_store.ensure_collection()
+
+        # Real cache invalidator (#20): a successful ingest now evicts the
+        # document's cached first-turn answers from the same Redis the
+        # response cache writes. It owns its own redis-py client, closed on
+        # shutdown. Fail-open internally, so a cache outage never fails ingest.
+        invalidator = RedisCacheInvalidator(settings.redis_url)
+        closers.append(("cache invalidator", invalidator.close))
     except Exception:
         _close_all(list(reversed(closers)))
         raise
 
-    service = IngestionService(
-        chunk_store, bm25_index, embedder, vector_store, NoopCacheInvalidator()
-    )
+    service = IngestionService(chunk_store, bm25_index, embedder, vector_store, invalidator)
     return service, list(reversed(closers))
 
 

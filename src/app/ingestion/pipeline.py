@@ -75,10 +75,16 @@ class CacheInvalidator(Protocol):
 
 
 class NoopCacheInvalidator:
-    """Stand-in until the Redis-backed invalidator (#20) lands."""
+    """A no-op invalidator for ingests with no response cache to evict.
+
+    The live app path wires the Redis-backed invalidator (#20); this
+    remains for contexts with no shared cache — the offline eval CLI, which
+    ingests into a throwaway Qdrant collection and must never touch (let
+    alone evict) the production cache — and for tests.
+    """
 
     def invalidate_document(self, doc_id: str) -> None:
-        """Nothing is cached yet, so there is nothing to invalidate."""
+        """No cache in this context, so there is nothing to invalidate."""
 
 
 class SupportsChunkStorage(Protocol):
