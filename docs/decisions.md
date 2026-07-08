@@ -78,6 +78,22 @@ ship the reranker **enabled** for quality; latency-sensitive deployments
 should gate it behind a flag or a smaller model. `make eval-rerank`
 prints the full metric + latency table on demand. (#15)
 
+### Weak-retrieval grounded refusal gated on the reranker's best score
+Grounded refusal used to fire only when retrieval returned zero chunks.
+It now also fires when retrieval returns chunks whose **best** 0–10
+reranker relevance score is below `min_rerank_score` (env
+`MIN_RERANK_SCORE`, a float, default `2.0`, bounded `[0.0, 10.0]`; `0`
+disables the gate) — the retrieved context isn't relevant enough. Both
+cases return the fixed escalation answer with `sources=[]` and HTTP 200,
+calling neither the LLM nor the cache write. The gate **fails open**: if
+the reranker scored *nothing* — a total outage where every candidate
+fails open (e.g. Ollama down) — there is no relevance signal, so the
+pipeline does not refuse and answers from the fused order; a reranker
+outage can never cause a false refusal, while under a partial outage the
+best scored candidate still drives the gate. The floor is deliberately
+conservative: at `2.0` only a clearly-irrelevant best chunk (score 0 or
+1) refuses, tunable against `make eval` / `make eval-rerank`. (#50)
+
 ### bge/query-prefix requirement generalized to per-model prompt templates
 Embedding models need distinct query vs passage prompts (bge's original
 constraint); the embedder pins a template per model rather than hardcoding
