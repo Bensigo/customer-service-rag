@@ -192,6 +192,60 @@ def test_client_failure_fails_open_to_fused_order():
     assert [r.chunk.doc_id for r in result] == ["a", "b"]
 
 
+# --- rerank_scored: expose the best relevance score for the chat gate (#50) --
+
+
+def test_rerank_scored_returns_ordered_and_best_assigned_score():
+    candidates = [_retrieved("a", "alpha", 0.9), _retrieved("b", "bravo", 0.8)]
+    client = FakeRerankClient({"alpha": "3", "bravo": "8"})
+    reranker = Reranker(client=client)
+
+    ordered, best = reranker.rerank_scored("q", candidates, top_n=2)
+
+    # best is the strongest score any candidate got, on the 0-10 scale.
+    assert best == 8.0
+    # ...and the returned order matches plain rerank() (8 outranks 3).
+    assert [r.chunk.doc_id for r in ordered] == ["b", "a"]
+
+
+def test_rerank_scored_best_is_none_on_full_fail_open():
+    # The model scored NOTHING (Ollama down): there is no relevance signal,
+    # so best must be None — the caller must not read that as "low relevance".
+    candidates = [_retrieved("a", "alpha", 0.9), _retrieved("b", "bravo", 0.8)]
+    client = FakeRerankClient({}, raises=RerankError("ollama down"))
+    reranker = Reranker(client=client)
+
+    ordered, best = reranker.rerank_scored("q", candidates, top_n=2)
+
+    assert best is None
+    # Candidates still come back (fail-open), in fused order.
+    assert [r.chunk.doc_id for r in ordered] == ["a", "b"]
+
+
+def test_rerank_scored_empty_candidates_returns_empty_and_none():
+    reranker = Reranker(client=FakeRerankClient({}))
+
+    ordered, best = reranker.rerank_scored("q", [], top_n=2)
+
+    assert ordered == []
+    assert best is None
+
+
+def test_rerank_scored_best_ignores_unscored_when_some_scored():
+    # One candidate fails to parse (unscored, fail-open at its slot); best
+    # must reflect only the candidates that actually got a score.
+    candidates = [
+        _retrieved("a", "alpha", 0.9),
+        _retrieved("b", "bravo", 0.8),
+    ]
+    client = FakeRerankClient({"alpha": "banana", "bravo": "4"})
+    reranker = Reranker(client=client)
+
+    _, best = reranker.rerank_scored("q", candidates, top_n=2)
+
+    assert best == 4.0
+
+
 # --- prompt-injection guard ------------------------------------------------
 
 

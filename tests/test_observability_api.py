@@ -57,6 +57,10 @@ class FakeReranker:
     def rerank(self, query, candidates, top_n=5):
         return list(candidates)[:top_n]
 
+    def rerank_scored(self, query, candidates, top_n=5):
+        # High score => relevance gate passes; these specs cover timings.
+        return list(candidates)[:top_n], 10.0
+
 
 class FakeLLMClient:
     def __init__(self, *, reply="grounded answer"):

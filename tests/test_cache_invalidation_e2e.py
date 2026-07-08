@@ -129,6 +129,10 @@ class _PassthroughReranker:
     def rerank(self, query, candidates, top_n=5):
         return list(candidates)[:top_n]
 
+    def rerank_scored(self, query, candidates, top_n=5):
+        # High score => relevance gate passes; this spec covers invalidation.
+        return list(candidates)[:top_n], 10.0
+
 
 class _SpyRetriever:
     """Wraps the app's real RetrieverPool and counts retrieve() calls, so
