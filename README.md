@@ -14,8 +14,8 @@ What it does, end to end:
 - **Upload** a `.txt` / `.md` / `.pdf` support doc; it is chunked,
   embedded, and indexed into both a keyword (BM25) and a vector store.
 - **Ask** a question; it is answered from the retrieved chunks only —
-  grounded, cited, and refusing rather than hallucinating when it finds
-  nothing.
+  grounded, cited, and refusing rather than hallucinating when nothing
+  relevant comes back.
 - **Cache** identical first-turn questions so common FAQs skip the whole
   pipeline — and **invalidate** those cached answers the instant the
   source document changes.
@@ -62,15 +62,21 @@ flowchart TD
     B25 --> M["Merge + dedupe<br/>RRF fusion"]
     V --> M
     M --> RR["Rerank<br/>LLM pointwise scoring (Ollama)"]
-    RR --> CA["Context assembly<br/>chunks + conversation history"]
+    RR --> RG{"Relevant enough?<br/>best score ≥ MIN_RERANK_SCORE"}
+    RG -- "weak / irrelevant" --> ESC["Escalation answer<br/>grounded refusal, no LLM call"]
+    RG -- "yes / no rerank signal" --> CA["Context assembly<br/>chunks + conversation history"]
     CA --> L["Generate answer<br/>Ollama gemma4 (or Claude)"]
     L --> W["Answer + cache write<br/>TTL + source-doc tags"]
     DU["Doc updated"] -. evicts .-> CS[("Cache store<br/>Redis, TTL-scoped")]
     CS --- H
 ```
 
-If retrieval returns no chunks, the LLM is never called — a fixed
-escalation answer is returned instead (grounded refusal). A generation
+If retrieval returns no chunks — or returns chunks the reranker scores
+below a relevance floor (`MIN_RERANK_SCORE`, default 2.0 on the 0–10
+scale; 0 disables the gate) — the LLM is never called and a fixed
+escalation answer is returned instead (grounded refusal). A total
+reranker outage leaves no relevance signal, so it never forces a false
+refusal — the pipeline answers from the fused order. A generation
 failure becomes a `503` and leaves the session untouched so a retry
 replays cleanly.
 
@@ -305,7 +311,8 @@ Response:
 ```
 
 `cached` is `true` only on a first-turn cache hit. When retrieval finds
-nothing, `answer` is a fixed escalation message and `sources` is empty.
+nothing — or nothing the reranker scores as relevant enough — `answer`
+is a fixed escalation message and `sources` is empty.
 
 | Status | When |
 |---|---|
