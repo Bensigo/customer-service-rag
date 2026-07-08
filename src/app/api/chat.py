@@ -77,9 +77,9 @@ class SupportsRetriever(Protocol):
 
 
 class SupportsReranker(Protocol):
-    def rerank(
+    def rerank_scored(
         self, query: str, candidates: list[RetrievedChunk], top_n: int = 5
-    ) -> list[RetrievedChunk]: ...
+    ) -> tuple[list[RetrievedChunk], float | None]: ...
 
 
 class SupportsResponseCache(Protocol):
@@ -114,12 +114,17 @@ def get_cache_ttl_seconds(request: Request) -> int:
     return request.app.state.cache_ttl_seconds
 
 
+def get_min_rerank_score(request: Request) -> float:
+    return request.app.state.min_rerank_score
+
+
 SessionStoreDep = Annotated[SupportsSessionStore, Depends(get_session_store)]
 RetrieverDep = Annotated[SupportsRetriever, Depends(get_retriever)]
 RerankerDep = Annotated[SupportsReranker, Depends(get_reranker)]
 LLMClientDep = Annotated[LLMClient, Depends(get_llm_client)]
 ResponseCacheDep = Annotated[SupportsResponseCache, Depends(get_response_cache)]
 CacheTtlDep = Annotated[int, Depends(get_cache_ttl_seconds)]
+MinRerankScoreDep = Annotated[float, Depends(get_min_rerank_score)]
 
 
 class ChatRequest(BaseModel):
@@ -212,6 +217,7 @@ async def chat(
     llm: LLMClientDep,
     cache: ResponseCacheDep,
     cache_ttl: CacheTtlDep,
+    min_rerank_score: MinRerankScoreDep,
 ) -> ChatResponse | JSONResponse:
     """POST /chat — the single instrumentation seam for #21.
 
@@ -223,7 +229,9 @@ async def chat(
     there instead, without a summary line.
     """
     timings = StageTimings()
-    result = await _run_chat(body, sessions, retriever, reranker, llm, cache, cache_ttl, timings)
+    result = await _run_chat(
+        body, sessions, retriever, reranker, llm, cache, cache_ttl, min_rerank_score, timings
+    )
     emit_request_summary(
         request_id=getattr(request.state, "request_id", ""),
         route="/chat",
@@ -253,6 +261,7 @@ async def _run_chat(
     llm: LLMClient,
     cache: SupportsResponseCache,
     cache_ttl: int,
+    min_rerank_score: float,
     timings: StageTimings,
 ) -> _ChatResult:
     session_id = body.session_id
@@ -298,9 +307,26 @@ async def _run_chat(
         )
 
     with timings.stage("rerank"):
-        reranked = await anyio.to_thread.run_sync(
-            lambda: reranker.rerank(question, candidates, top_n=_RERANK_TOP_N)
+        reranked, top_score = await anyio.to_thread.run_sync(
+            lambda: reranker.rerank_scored(question, candidates, top_n=_RERANK_TOP_N)
         )
+
+    # Relevance gate: refuse when even the strongest retrieved chunk is not
+    # relevant enough, so the model never answers from weak context. top_score
+    # is None only on a full reranker fail-open (nothing scored, e.g. Ollama
+    # down) — with no relevance signal we do NOT refuse, degrading to an answer
+    # from the fused order rather than letting a reranker outage take chat down.
+    if top_score is not None and top_score < min_rerank_score:
+        logger.info(
+            "chat low-relevance escalation session=%s top_score=%.1f floor=%.1f",
+            session_id,
+            top_score,
+            min_rerank_score,
+        )
+        return _ChatResult(
+            ChatResponse(answer=ESCALATION_ANSWER, sources=[]), status=200, cache_hit=False
+        )
+
     assembled = assemble_context(question, reranked, history)
 
     try:

@@ -244,10 +244,11 @@ def create_app() -> FastAPI:
         preinjected = getattr(app.state, "ingestion_service", None) is not None
         need_max_bytes = getattr(app.state, "max_upload_bytes", None) is None
         need_cache_ttl = getattr(app.state, "cache_ttl_seconds", None) is None
+        need_min_rerank = getattr(app.state, "min_rerank_score", None) is None
         closers: list[tuple[str, Callable[[], None]]] = []
         # Only load Settings when something actually needs it, so unit tests
         # that inject a fake and preset the cap never require live config.
-        if not preinjected or need_max_bytes or need_cache_ttl:
+        if not preinjected or need_max_bytes or need_cache_ttl or need_min_rerank:
             settings = get_settings()
             if not preinjected:
                 service, closers = _build_ingestion_service(settings)
@@ -280,6 +281,10 @@ def create_app() -> FastAPI:
             # unit tests that override the cache dep still get a real value.
             if need_cache_ttl:
                 app.state.cache_ttl_seconds = settings.cache_ttl_seconds
+            # The chat relevance gate (#50) resolves its floor from app.state
+            # the same way, so overriding the reranker dep still gets a value.
+            if need_min_rerank:
+                app.state.min_rerank_score = settings.min_rerank_score
         # single-permit limiter: extraction + ingestion run one at a time
         # off the event loop (see app.api.documents for why one worker)
         app.state.ingest_limiter = anyio.CapacityLimiter(1)

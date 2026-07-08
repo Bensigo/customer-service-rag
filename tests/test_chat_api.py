@@ -60,14 +60,25 @@ class FakeRetriever:
 
 
 class FakeReranker:
-    """Returns the top_n candidates unchanged (records the call)."""
+    """Returns the top_n candidates unchanged (records the call).
 
-    def __init__(self):
+    ``top_score`` is the best relevance score reported by rerank_scored:
+    it defaults high so the relevance gate (#50) passes and the pipeline
+    answers; a test sets it low to exercise a weak-retrieval refusal, or
+    None to exercise the full fail-open path (reranker scored nothing).
+    """
+
+    def __init__(self, *, top_score=10.0):
         self.calls = []
+        self._top_score = top_score
 
     def rerank(self, query, candidates, top_n=5):
         self.calls.append((query, list(candidates)))
         return list(candidates)[:top_n]
+
+    def rerank_scored(self, query, candidates, top_n=5):
+        self.calls.append((query, list(candidates)))
+        return list(candidates)[:top_n], self._top_score
 
 
 class FakeLLMClient:
@@ -163,6 +174,54 @@ def test_no_retrieval_results_returns_escalation_without_llm_call():
     assert body["sources"] == []
     # A support bot must refuse rather than hallucinate: LLM never invoked.
     assert llm.calls == []
+
+
+def test_low_relevance_returns_escalation_without_llm_call(two_chunks):
+    # Retrieval found chunks, but the reranker judged even the best one below
+    # the floor (weak/irrelevant). Refuse rather than answer from it (#50).
+    llm = FakeLLMClient()
+    app = _build_app(chunks=two_chunks, llm=llm, reranker=FakeReranker(top_score=1.0))
+    app.state.min_rerank_score = 5.0  # floor above the weak score
+    with TestClient(app) as client:
+        response = _post(client)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == ESCALATION_ANSWER
+    assert body["sources"] == []
+    assert llm.calls == []
+
+
+def test_relevance_at_floor_answers(two_chunks):
+    # The gate refuses on score < floor, so a score equal to the floor still
+    # answers — the boundary is inclusive of the floor.
+    llm = FakeLLMClient(reply="Use the portal to reset.")
+    app = _build_app(chunks=two_chunks, llm=llm, reranker=FakeReranker(top_score=5.0))
+    app.state.min_rerank_score = 5.0
+    with TestClient(app) as client:
+        response = _post(client)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Use the portal to reset."
+    assert len(llm.calls) == 1
+
+
+def test_reranker_full_fail_open_still_answers(two_chunks):
+    # The reranker scored NOTHING (top_score None, e.g. Ollama down). With no
+    # relevance signal the gate must NOT refuse — a reranker outage can't take
+    # chat offline; it degrades to answering from the fused order.
+    llm = FakeLLMClient(reply="answer from fused order")
+    app = _build_app(chunks=two_chunks, llm=llm, reranker=FakeReranker(top_score=None))
+    app.state.min_rerank_score = 5.0
+    with TestClient(app) as client:
+        response = _post(client)
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "answer from fused order"
+    assert len(llm.calls) == 1
 
 
 def test_llm_failure_returns_503_and_appends_no_turns(two_chunks):

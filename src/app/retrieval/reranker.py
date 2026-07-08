@@ -201,11 +201,32 @@ class Reranker:
         replacing the fused score. An empty candidate list returns ``[]``
         without calling the model.
         """
+        ordered, _ = self.rerank_scored(query, candidates, top_n)
+        return ordered
+
+    def rerank_scored(
+        self, query: str, candidates: list[RetrievedChunk], top_n: int = 5
+    ) -> tuple[list[RetrievedChunk], float | None]:
+        """Like :meth:`rerank`, but also return the strongest relevance
+        score any candidate received (0-10), for the chat relevance gate.
+
+        The score is the max over the candidates the model *actually*
+        scored (fail-open candidates are ignored, not counted as 0). The
+        second element is ``None`` only when the model scored *nothing* — a
+        full fail-open (e.g. Ollama unreachable), where every candidate kept
+        its fused position. ``None`` means "no relevance signal available",
+        so a caller must NOT read it as low relevance. The no-refusal
+        guarantee is for a *total* outage: under a partial one (some scored,
+        some failed) the best of the scored candidates still drives the gate.
+        An empty candidate list returns ``([], None)`` without the model.
+        """
         if not candidates:
-            return []
+            return [], None
         scores = self._score_all(query, candidates)
-        ordered = self._merge(candidates, scores)
-        return ordered[:top_n]
+        ordered = self._merge(candidates, scores)[:top_n]
+        assigned = [s for s in scores if s is not None]
+        best = float(max(assigned)) if assigned else None
+        return ordered, best
 
     def _merge(
         self, candidates: list[RetrievedChunk], scores: list[int | None]

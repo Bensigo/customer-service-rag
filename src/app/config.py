@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_embed_model: str = "qwen3-embedding"
     ollama_rerank_model: str = "gemma4"
+    # Chat refuses (grounded escalation) when the reranker's best relevance
+    # score for a query is below this floor on the 0-10 scale — i.e. "the
+    # retrieved context isn't relevant enough". Conservative default: only a
+    # clearly-irrelevant best chunk (score 0 or 1) triggers a refusal. A full
+    # reranker fail-open (nothing scored) never refuses. Bounded to [0, 10];
+    # 0 effectively disables the gate. Tune against `make eval` / eval-rerank.
+    min_rerank_score: float = Field(default=2.0, ge=0.0, le=10.0)
     qdrant_collection: str = "chunks"
 
     @model_validator(mode="after")
